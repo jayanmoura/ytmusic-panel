@@ -73,7 +73,7 @@ const CALL_TIMEOUT_MS = 60000;
 
 export class YTMusicError extends Error {
     /**
-     * @param {string} code auth_required | network | unavailable | bad_request | duplicate | player | internal | offline | cancelled
+     * @param {string} code auth_required | network | unavailable | bad_request | invalid_request | duplicate | player | internal | offline | cancelled
      * @param {string} message
      */
     constructor(code, message) {

@@ -150,6 +150,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._controlSets = []; // mini player and expanded player buttons
         this._npExtraHeight = 0; // mini player height, given to the expanded player
         this._progressTimeoutId = 0;
+        this._restoreScrollIdleId = 0;
+        // Set by destroy(); async replies that land later must not touch actors.
+        this._destroyed = false;
         this._progressBase = {position: 0, at: 0, duration: null};
         this._lastSync = 0;
         // Bumped on every navigation/load; stale async replies are dropped.
@@ -164,6 +167,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._buildContent();
 
         this.menu.connect('open-state-changed', (_menu, open) => {
+            if (this._destroyed)
+                return; // the menu closes while being destroyed
             if (!open) {
                 this._stopProgress();
                 this._closeFloat();
@@ -202,7 +207,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     // open handler pushes a modal that moves key focus to the menu actor.
     focusSearchOnOpen() {
         this.menu.connect('open-state-changed', (_menu, open) => {
-            if (open)
+            if (open && !this._destroyed)
                 this._searchEntry.grab_key_focus();
         });
     }
@@ -767,7 +772,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         while (this._renderedTracks < Math.min(rendered, this._shownTracks.length) &&
                this._renderedTracks > 0)
             this._renderMoreTracks();
-        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        if (this._restoreScrollIdleId)
+            GLib.source_remove(this._restoreScrollIdleId);
+        this._restoreScrollIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._restoreScrollIdleId = 0;
             this._scroll.vadjustment.value = scroll;
             return GLib.SOURCE_REMOVE;
         });
@@ -963,9 +971,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._closeFloat();
         try {
             await this._client.call(method, track.videoId);
-            this._showToast(method === 'PlayNext' ? 'Vai tocar a seguir' : 'Adicionada à fila');
+            if (!this._destroyed)
+                this._showToast(method === 'PlayNext' ? 'Vai tocar a seguir' : 'Adicionada à fila');
         } catch (e) {
-            if (e.code !== 'cancelled')
+            if (e.code !== 'cancelled' && !this._destroyed)
                 this._showToast((ERROR_TEXT[e.code] ?? [e.message])[0]);
         }
     }
@@ -981,10 +990,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         try {
             await this._client.call('RemoveFromPlaylist', playlist.id, track.videoId);
         } catch (e) {
-            if (e.code !== 'cancelled')
+            if (e.code !== 'cancelled' && !this._destroyed)
                 this._showToast(e.code === 'bad_request' ? e.message : (ERROR_TEXT[e.code] ?? [e.message])[0]);
             return;
         }
+        if (this._destroyed)
+            return;
         this._playlists = null; // counts changed; reload on next visit
         if (this._view === 'tracks' && this._playlist === playlist) {
             this._tracks = this._tracks.filter(t => t.videoId !== track.videoId);
@@ -1029,11 +1040,11 @@ class YTMusicIndicator extends PanelMenu.Button {
             try {
                 this._playlists = this._sortPlaylists(await this._client.call('GetPlaylists'));
             } catch (e) {
-                if (e.code !== 'cancelled' && this._pickerTrack === track)
+                if (e.code !== 'cancelled' && !this._destroyed && this._pickerTrack === track)
                     this._setPickerMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
                 return;
             }
-            if (this._pickerTrack !== track)
+            if (this._destroyed || this._pickerTrack !== track)
                 return;
         }
         this._renderPicker(track);
@@ -1104,6 +1115,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             row.reactive = false;
         try {
             await this._client.call('AddToPlaylist', playlist.id, track.videoId);
+            if (this._destroyed)
+                return;
             const where = playlist.id === LIKED_PLAYLIST_ID ? 'Músicas que gostei' : playlist.title;
             Main.notify('YouTube Music', `"${track.title}" adicionada a ${where}.`);
             if (this._pickerTrack === track) {
@@ -1111,7 +1124,7 @@ class YTMusicIndicator extends PanelMenu.Button {
                 this._closePicker();
             }
         } catch (e) {
-            if (e.code === 'cancelled')
+            if (e.code === 'cancelled' || this._destroyed)
                 return;
             const message = e.code === 'duplicate' || e.code === 'bad_request'
                 ? e.message
@@ -1388,7 +1401,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         try {
             this._updatePlayer(await this._client.call(method));
         } catch (e) {
-            if (e.code !== 'cancelled')
+            if (e.code !== 'cancelled' && !this._destroyed)
                 Main.notify('YouTube Music', (ERROR_TEXT[e.code] ?? [e.message])[0]);
         }
     }
@@ -1620,7 +1633,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._lastSync = GLib.get_monotonic_time();
         try {
             const data = await this._client.call('GetPosition');
-            this._setPositionBase(data.position, data.duration);
+            if (!this._destroyed)
+                this._setPositionBase(data.position, data.duration);
         } catch (e) {
             // Keep interpolating; the next sync will correct it.
         }
@@ -1681,9 +1695,11 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._setPositionBase(seconds, duration); // move the bar right away
         try {
             const data = await this._client.call('Seek', seconds);
-            this._setPositionBase(data.position, data.duration);
+            if (!this._destroyed)
+                this._setPositionBase(data.position, data.duration);
         } catch (e) {
-            this._syncPosition();
+            if (!this._destroyed)
+                this._syncPosition();
         }
     }
 
@@ -1745,7 +1761,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         try {
             await this._client.call(method, ...args);
         } catch (e) {
-            if (e.code === 'cancelled')
+            if (e.code === 'cancelled' || this._destroyed)
                 return;
             const [title, hint] = ERROR_TEXT[e.code] ?? [e.message, null];
             Main.notify('YouTube Music', hint ? `${title} ${hint}` : title);
@@ -1753,10 +1769,11 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     destroy() {
+        this._destroyed = true;
         this._serial++;
         this._playerTitle.remove_transition('translation-x');
         for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_prepareTimeoutId', '_toastTimeoutId',
-            '_progressTimeoutId']) {
+            '_progressTimeoutId', '_restoreScrollIdleId']) {
             if (this[id]) {
                 GLib.source_remove(this[id]);
                 this[id] = 0;

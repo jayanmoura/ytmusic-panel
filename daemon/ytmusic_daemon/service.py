@@ -3,8 +3,9 @@
 Every method returns a JSON string:
     {"ok": true, "data": ...}
     {"ok": false, "error": "<code>", "message": "<human readable>"}
-Error codes: auth_required, network, unavailable, bad_request, duplicate, player,
-internal.
+Error codes: auth_required, network, unavailable, bad_request, invalid_request,
+duplicate, player, internal. invalid_request means the arguments failed
+validation (see validation.py) and nothing was done.
 """
 
 import json
@@ -27,6 +28,7 @@ from .browser_login import BrowserLoginError  # noqa: E402
 from .covers import CoverCache  # noqa: E402
 from .player import Player, PlayerError  # noqa: E402
 from .resolver import Resolver  # noqa: E402
+from .validation import InvalidRequest, validate  # noqa: E402
 
 log = logging.getLogger("ytmusic-daemon")
 
@@ -226,7 +228,13 @@ class Service:
         self.loop.quit()
 
     def _on_method_call(self, conn, sender, path, iface, method, params, invocation):
-        args = params.unpack()
+        # Validate before anything else, so bad input never reaches ytmusicapi or mpv.
+        try:
+            args = validate(method, params.unpack())
+        except InvalidRequest as e:
+            log.warning("invalid arguments for %s", method)
+            invocation.return_value(GLib.Variant("(s)", (err("invalid_request", str(e)),)))
+            return
         if method in self._sync_methods:
             invocation.return_value(GLib.Variant("(s)", (self._sync_methods[method](*args),)))
             return
@@ -322,8 +330,7 @@ class Service:
 
     def _prepare(self, video_id: str) -> str:
         """The user is about to pick this track (e.g. hovering it): resolve it now."""
-        if video_id:
-            self.resolver.prefetch(video_id)
+        self.resolver.prefetch(video_id)
         return ok(None)
 
     def _on_track_loaded(self, index: int) -> None:
@@ -382,8 +389,6 @@ class Service:
         log.info("queued %d more tracks", len(rest))
 
     def _add_to_playlist(self, playlist_id: str, video_id: str) -> dict:
-        if not playlist_id or not video_id:
-            raise BadRequest("Playlist ou música inválida.")
         playlists = {p["id"]: p for p in self.client.get_playlists()}
         target = playlists.get(playlist_id)
         if target is None:
@@ -394,8 +399,6 @@ class Service:
         return {"playlist": target["title"]}
 
     def _enqueue(self, video_id: str, play_next: bool) -> dict:
-        if not video_id:
-            raise BadRequest("Música inválida.")
         track = self.client.track_info(video_id)
         self.resolver.prefetch(video_id)
         with self._play_lock:
@@ -406,8 +409,6 @@ class Service:
         return {"title": track.get("title")}
 
     def _remove_from_playlist(self, playlist_id: str, video_id: str) -> dict:
-        if not playlist_id or not video_id:
-            raise BadRequest("Playlist ou música inválida.")
         playlists = {p["id"]: p for p in self.client.get_playlists()}
         target = playlists.get(playlist_id)
         if target is None:
@@ -446,13 +447,7 @@ class Service:
         log.info("credentials renewed from the browser")
         return True
 
-    def _get_covers(self, urls_json: str) -> dict:
-        try:
-            urls = json.loads(urls_json)
-        except ValueError:
-            raise BadRequest("Lista de capas inválida.") from None
-        if not isinstance(urls, list) or len(urls) > 200:
-            raise BadRequest("Lista de capas inválida.")
+    def _get_covers(self, urls: list[str]) -> dict:
         return self.covers.get_many(urls)
 
     def _get_account(self) -> dict:
@@ -463,13 +458,9 @@ class Service:
         return account
 
     def _search(self, query: str) -> list[dict]:
-        if len(query) > 200:
-            raise BadRequest("Busca muito longa.")
         return self.client.search(query)
 
     def _play_track(self, video_id: str) -> dict:
-        if not video_id:
-            raise BadRequest("Música inválida.")
         self.resolver.resolve(video_id, PLAY_RESOLVE_TIMEOUT)
         with self._play_lock:
             self._play_gen += 1
