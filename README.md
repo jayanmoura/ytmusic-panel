@@ -131,25 +131,50 @@ busctl --user call io.github.jayanmoura.YTMusic /io/github/jayanmoura/YTMusic io
 Estrutura:
 
 ```
-extension/              extensão GNOME Shell (GJS, módulos ES)
-  extension.js          botão do painel e popup
-  ytmusicClient.js      cliente D-Bus assíncrono
-  prefs.js              preferências (Adw)
-daemon/ytmusic_daemon/  serviço Python
-  service.py            interface D-Bus
-  client.py             ytmusicapi, caches
-  player.py             mpv via IPC
-  covers.py             cache de capas em disco
-  login.py              ytmusic-daemon-login (login manual)
-  browser_login.py      login com os cookies do navegador
-  resolver.py           obtém o áudio com antecedência (yt-dlp como biblioteca)
-  preload.lua           script do mpv que usa o áudio já obtido
+extension/                extensão GNOME Shell (GJS, módulos ES)
+  extension.js            enable/disable: adiciona e remove o indicador
+  indicator.js            botão do painel e popup: montagem, navegação entre as
+                          telas, sobreposições e distribuição do estado da reprodução
+  constants.js            IDs especiais, tempos e textos de erro
+  util.js                 funções puras (ordenar playlists, formatar tempo etc.)
+  appearance.js           altura da lista e tema claro/escuro
+  covers.js               capas: fila e carregamento em lote pelo serviço
+  ytmusicClient.js        cliente D-Bus assíncrono
+  prefs.js                preferências (Adw)
+  views/
+    playlistsView.js      lista de playlists
+    tracksView.js         músicas da playlist, filtro, ordem e "mostrar mais"
+    searchView.js         busca
+    pickerView.js         "Adicionar a playlist"
+  player/
+    controls.js           botões de reprodução e o estado deles
+    miniPlayer.js         mini player e título rolando
+    nowPlaying.js         player expandido e barra de progresso
+  widgets/
+    common.js             botões, rótulos e ClipBox
+    header.js             linha de busca e cabeçalho
+    trackRow.js           linha de música e pré-carga ao passar o mouse
+    floatMenu.js          menu flutuante (⋮) e as ações da música
+    toast.js              avisos curtos ("Link copiado")
+daemon/ytmusic_daemon/    serviço Python
+  service.py              interface D-Bus
+  validation.py           validação dos argumentos de todos os métodos D-Bus
+  client.py               ytmusicapi, caches
+  player.py               mpv via IPC
+  covers.py               cache de capas em disco
+  login.py                ytmusic-daemon-login (login manual)
+  browser_login.py        login com os cookies do navegador
+  resolver.py             obtém o áudio com antecedência (yt-dlp como biblioteca)
+  preload.lua             script do mpv que usa o áudio já obtido
 scripts/
-  install-daemon.sh     venv, pacote e serviço systemd
-  dev-link.sh           liga a extensão a ~/.local/share e compila o schema
-  nested-shell.sh       shell aninhada para testes, com o serviço no barramento dela
-  check-interface.py    confere se a interface D-Bus da extensão bate com a do serviço
+  install-daemon.sh       venv, pacote e serviço systemd
+  dev-link.sh             liga a extensão a ~/.local/share e compila o schema
+  nested-shell.sh         shell aninhada para testes, com o serviço no barramento dela
+  check-interface.py      confere se a interface D-Bus da extensão bate com a do serviço
+  check-calls.py          confere se os métodos do indicador chamados pelos módulos existem
 ```
+
+Os módulos de `views/`, `player/` e `widgets/` recebem o indicador como parâmetro e nunca importam o `indicator.js` (sem importação circular). Cada módulo que cria timeouts ou conecta sinais tem o próprio `destroy()`, chamado pelo indicador.
 
 Ciclo de desenvolvimento:
 
