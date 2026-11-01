@@ -3,7 +3,8 @@
 Every method returns a JSON string:
     {"ok": true, "data": ...}
     {"ok": false, "error": "<code>", "message": "<human readable>"}
-Error codes: auth_required, network, unavailable, bad_request, player, internal.
+Error codes: auth_required, network, unavailable, bad_request, duplicate, player,
+internal.
 """
 
 import json
@@ -20,7 +21,7 @@ gi.require_version("GLib", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
 from . import BUS_NAME, INTERFACE, OBJECT_PATH  # noqa: E402
-from .client import AuthError, Client, ServiceError, UnavailableError  # noqa: E402
+from .client import AuthError, Client, DuplicateError, ServiceError, UnavailableError  # noqa: E402
 from .player import Player, PlayerError  # noqa: E402
 
 log = logging.getLogger("ytmusic-daemon")
@@ -55,6 +56,11 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="json" direction="out"/>
     </method>
     <method name="PlayTrack">
+      <arg type="s" name="video_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="AddToPlaylist">
+      <arg type="s" name="playlist_id" direction="in"/>
       <arg type="s" name="video_id" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
@@ -121,6 +127,7 @@ class Service:
             "Search": lambda q: ok(self._search(q)),
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
+            "AddToPlaylist": lambda pid, vid: ok(self._add_to_playlist(pid, vid)),
             "TogglePause": lambda: self._control(self.player.toggle_pause),
             "Next": lambda: self._control(self.player.next),
             "Previous": lambda: self._control(self.player.previous),
@@ -161,6 +168,8 @@ class Service:
             GLib.idle_add(self._emit_auth_required)
         except BadRequest as e:
             result = err("bad_request", str(e))
+        except DuplicateError:
+            result = err("duplicate", "Essa música já está na playlist.")
         except PlayerError as e:
             log.warning("player error: %s", e)
             result = err("player", "Não foi possível tocar (mpv).")
@@ -268,6 +277,18 @@ class Service:
                 log.warning("append failed: %s", e)
                 return
         log.info("queued %d more tracks", len(rest))
+
+    def _add_to_playlist(self, playlist_id: str, video_id: str) -> dict:
+        if not playlist_id or not video_id:
+            raise BadRequest("Playlist ou música inválida.")
+        playlists = {p["id"]: p for p in self.client.get_playlists()}
+        target = playlists.get(playlist_id)
+        if target is None:
+            raise BadRequest("Playlist não encontrada.")
+        if not target["owned"] and playlist_id != "LM":
+            raise BadRequest("Você só pode adicionar músicas às suas playlists.")
+        self.client.add_to_playlist(playlist_id, video_id)
+        return {"playlist": target["title"]}
 
     def _search(self, query: str) -> list[dict]:
         if len(query) > 200:

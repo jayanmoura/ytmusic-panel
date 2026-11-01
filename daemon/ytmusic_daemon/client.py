@@ -9,6 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
 from ytmusicapi import YTMusic
+from ytmusicapi.models.content.enums import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError, YTMusicUserError
 
 from .cache import TTLCache
@@ -16,6 +17,7 @@ from .paths import AUTH_FILE
 
 log = logging.getLogger(__name__)
 
+LIKED_PLAYLIST_ID = "LM"
 PLAYLISTS_TTL = 300  # seconds
 TRACKS_TTL = 600
 SEARCH_TTL = 120
@@ -30,6 +32,10 @@ class AuthError(Exception):
 
 class ServiceError(Exception):
     """Network or backend failure unrelated to auth."""
+
+
+class DuplicateError(Exception):
+    """The track is already in the target playlist."""
 
 
 class UnavailableError(ServiceError):
@@ -205,6 +211,25 @@ class Client:
             return tracks
 
         return self._search_cache.get_or_fetch(query.casefold(), fetch)
+
+    def add_to_playlist(self, playlist_id: str, video_id: str) -> None:
+        if playlist_id == LIKED_PLAYLIST_ID:
+            # "Liked music" can't be edited directly; liking the song adds it.
+            self._call(lambda yt: yt.rate_song(video_id, LikeStatus.LIKE))
+        else:
+            cached = self._tracks_cache.get(playlist_id)
+            if cached and any(t["videoId"] == video_id for t in cached["tracks"]):
+                raise DuplicateError()
+            result = self._call(
+                lambda yt: yt.add_playlist_items(playlist_id, [video_id], duplicates=False))
+            status = result.get("status", "") if isinstance(result, dict) else ""
+            if "SUCCEEDED" not in status:
+                # Without duplicates=True the backend refuses songs already present.
+                log.warning("add to playlist not confirmed (status %r)", status or None)
+                raise DuplicateError()
+        self._tracks_cache.invalidate(playlist_id)
+        self._cache.invalidate("playlists")  # track counts changed
+        log.info("track added to a playlist")
 
     def _remember(self, tracks: list[dict]) -> None:
         with self._lock:

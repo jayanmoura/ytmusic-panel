@@ -182,3 +182,12 @@
   border-radius: 99px;
   padding: 6px 12px;
 }
+
+.ytmusic-row-add {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.ytmusic-row-add:hover,
+.ytmusic-row-add:focus {
+  color: #fff;
+}

@@ -214,6 +214,25 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._scroll.set_child(this._list);
         box.add_child(this._scroll);
 
+        // "Add to playlist" picker. It sits on top of the current view (which
+        // is only hidden) so going back keeps that view's rows and scroll.
+        this._pickerScroll = new St.ScrollView({
+            style_class: 'ytmusic-scroll',
+            hscrollbar_policy: St.PolicyType.NEVER,
+            vscrollbar_policy: St.PolicyType.AUTOMATIC,
+            overlay_scrollbars: true,
+            x_expand: true,
+            visible: false,
+        });
+        this._pickerList = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+        });
+        this._pickerScroll.set_child(this._pickerList);
+        box.add_child(this._pickerScroll);
+        this._pickerTrack = null;
+        this._savedHeader = null;
+
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._buildPlayer();
     }
@@ -221,6 +240,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     _applyMaxHeight() {
         const h = this._settings.get_int('popup-max-height');
         this._scroll.style = `max-height: ${h}px;`;
+        this._pickerScroll.style = `max-height: ${h}px;`;
     }
 
     _setHeader(title, subtitle = null, canGoBack = false, showToolbar = canGoBack) {
@@ -232,6 +252,10 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _goBack() {
+        if (this._pickerTrack) {
+            this._closePicker();
+            return;
+        }
         if (this._view === 'search')
             this._searchEntry.set_text(''); // _onSearchChanged leaves the search view
         else
@@ -351,7 +375,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._list.add_child(this._createPlaylistRow(playlist));
     }
 
-    _createPlaylistRow(playlist) {
+    _createPlaylistRow(playlist, onClick = () => this._showTracks(playlist)) {
         const row = new St.BoxLayout({x_expand: true});
 
         row.add_child(ellipsized(new St.Label({
@@ -383,7 +407,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             x_expand: true,
             accessible_name: playlist.title,
         });
-        button.connect('clicked', () => this._showTracks(playlist));
+        button.connect('clicked', onClick);
         return button;
     }
 
@@ -523,12 +547,126 @@ class YTMusicIndicator extends PanelMenu.Button {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
+
+        const addButton = this._iconButton('list-add-symbolic', 'Adicionar a uma playlist',
+            () => this._openPicker(track));
+        addButton.add_style_class_name('ytmusic-row-add');
+        addButton.reactive = track.available;
+        addButton.can_focus = track.available;
+        row.add_child(addButton);
         return row;
+    }
+
+    // -- add to playlist --------------------------------------------------------
+
+    async _openPicker(track) {
+        if (!track.videoId)
+            return;
+        if (!this._pickerTrack) {
+            this._savedHeader = {
+                title: this._title.text,
+                subtitle: this._subtitle.visible ? this._subtitle.text : null,
+                back: this._backButton.visible,
+                toolbar: this._toolbar.visible,
+            };
+        }
+        this._pickerTrack = track;
+        this._setHeader('Adicionar a playlist', track.title, true, false);
+        this._refreshButton.visible = false;
+        this._scroll.visible = false;
+        this._pickerScroll.visible = true;
+        this._pickerScroll.vadjustment.value = 0;
+
+        if (!this._playlists) {
+            this._setPickerMessage('Carregando playlists…');
+            try {
+                this._playlists = sortPlaylists(await this._client.call('GetPlaylists'));
+            } catch (e) {
+                if (e.code !== 'cancelled' && this._pickerTrack === track)
+                    this._setPickerMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
+                return;
+            }
+            if (this._pickerTrack !== track)
+                return;
+        }
+        this._renderPicker(track);
+    }
+
+    _closePicker() {
+        if (!this._pickerTrack)
+            return;
+        this._pickerTrack = null;
+        this._pickerList.destroy_all_children();
+        this._pickerScroll.visible = false;
+        this._scroll.visible = true;
+        this._refreshButton.visible = true;
+        const h = this._savedHeader;
+        this._setHeader(h.title, h.subtitle, h.back, h.toolbar);
+        this._savedHeader = null;
+    }
+
+    _setPickerMessage(title, hint = null) {
+        this._pickerList.destroy_all_children();
+        const box = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'ytmusic-message',
+            x_expand: true,
+        });
+        box.add_child(new St.Label({text: title, style_class: 'ytmusic-message-title'}));
+        if (hint) {
+            const label = new St.Label({text: hint, style_class: 'ytmusic-message-hint'});
+            label.clutter_text.line_wrap = true;
+            box.add_child(label);
+        }
+        this._pickerList.add_child(box);
+    }
+
+    _renderPicker(track) {
+        this._pickerList.destroy_all_children();
+        // Only playlists the user can edit; skip the one being browsed.
+        const current = this._view === 'tracks' ? this._playlist?.id : null;
+        const targets = this._playlists.filter(p =>
+            (p.owned || p.id === LIKED_PLAYLIST_ID) && p.id !== current);
+        if (targets.length === 0) {
+            this._setPickerMessage('Nenhuma playlist sua disponível.');
+            return;
+        }
+        for (const playlist of targets) {
+            const row = this._createPlaylistRow(playlist, () => this._addToPlaylist(track, playlist));
+            this._pickerList.add_child(row);
+        }
+    }
+
+    async _addToPlaylist(track, playlist) {
+        // Block double clicks while the request runs.
+        for (const row of this._pickerList.get_children())
+            row.reactive = false;
+        try {
+            await this._client.call('AddToPlaylist', playlist.id, track.videoId);
+            const where = playlist.id === LIKED_PLAYLIST_ID ? 'Músicas que gostei' : playlist.title;
+            Main.notify('YouTube Music', `"${track.title}" adicionada a ${where}.`);
+            if (this._pickerTrack === track) {
+                this._playlists = null; // counts changed; reload on next visit
+                this._closePicker();
+            }
+        } catch (e) {
+            if (e.code === 'cancelled')
+                return;
+            const message = e.code === 'duplicate' || e.code === 'bad_request'
+                ? e.message
+                : (ERROR_TEXT[e.code] ?? ERROR_TEXT.internal)[0];
+            Main.notify('YouTube Music', message);
+            if (this._pickerTrack === track) {
+                for (const row of this._pickerList.get_children())
+                    row.reactive = true;
+            }
+        }
     }
 
     // -- search ----------------------------------------------------------------
 
     _onSearchChanged() {
+        this._closePicker();
         const text = this._searchEntry.get_text();
         this._searchEntry.secondary_icon = text ? this._clearSearchIcon : null;
 
