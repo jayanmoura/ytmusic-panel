@@ -42,9 +42,12 @@ for name in sorted(set(daemon) | set(ext)):
     elif daemon[name] != ext[name]:
         problems.append(f"assinatura diferente: {name} daemon={daemon[name]} extensão={ext[name]}")
 
-ext_code = "".join(p.read_text() for p in ext_dir.glob("*.js"))
+# Every module, including views/, player/ and widgets/.
+ext_code = "".join(p.read_text() for p in sorted(ext_dir.rglob("*.js")))
 called = set(re.findall(r"(?:call|_play|_control)\('([A-Za-z]+)'", ext_code))
 called |= set(re.findall(r"'(Refresh[A-Za-z]+|Get[A-Za-z]+)'", ext_code))
+# Indirect: the floating menu passes the method name to _enqueue().
+called |= set(re.findall(r"_enqueue\(\w+, '([A-Za-z]+)'", ext_code))
 for method in sorted(called):
     if f"method {method}" not in ext:
         problems.append(f"chamado mas não declarado na extensão: {method}")
