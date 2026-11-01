@@ -10,10 +10,11 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {ERROR_TEXT} from './constants.js';
 import {sortPlaylists} from './util.js';
+import {Appearance} from './appearance.js';
 import {CoverLoader} from './covers.js';
 import {YTMusicClient} from './ytmusicClient.js';
-import {ellipsized, iconButton} from './widgets/common.js';
 import {FloatMenu} from './widgets/floatMenu.js';
+import {Header} from './widgets/header.js';
 import {Toast} from './widgets/toast.js';
 import {TrackRowFactory} from './widgets/trackRow.js';
 import {PickerView} from './views/pickerView.js';
@@ -39,7 +40,6 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._view = 'playlists';
         this._playlists = null;
         this._playlist = null; // playlist shown in the tracks view
-        this._settingSearchText = false;
         this._overlayActor = null; // what the overlay shows: picker list or expanded player
         this._controlSets = []; // mini player and expanded player buttons
         this._npExtraHeight = 0; // mini player height, given to the expanded player
@@ -53,6 +53,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._tracksView = new TracksView(this);
         this._searchView = new SearchView(this);
         this._picker = new PickerView(this);
+        this._header = new Header(this);
+        this._appearance = new Appearance(this);
         this._mini = new MiniPlayer(this);
         this._np = new NowPlaying(this);
 
@@ -74,7 +76,7 @@ class YTMusicIndicator extends PanelMenu.Button {
                 return;
             }
             this._refreshPlayer();
-            this._fitHeight();
+            this._appearance.fitHeight();
             this._mini.updateMarquee();
             if (this._overlayActor === this._np.actor)
                 this._np.startProgress();
@@ -85,20 +87,20 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._refreshPlayer();
 
         this._settingsChangedIds = [
-            this._settings.connect('changed::popup-height', () => this._applyHeight()),
-            this._settings.connect('changed::popup-theme', () => this._applyTheme()),
+            this._settings.connect('changed::popup-height', () => this._appearance.applyHeight()),
+            this._settings.connect('changed::popup-theme', () => this._appearance.applyTheme()),
             this._settings.connect('changed::show-episodes-playlist', () => this._onLibraryOptionsChanged()),
             this._settings.connect('changed::show-covers', () => this._onLibraryOptionsChanged()),
         ];
-        this._applyHeight();
+        this._appearance.applyHeight();
 
         // The shell switches its own light/dark stylesheet on these.
         const stSettings = St.Settings.get();
         this._stSettingsIds = [
-            stSettings.connect('notify::color-scheme', () => this._applyTheme()),
-            stSettings.connect('notify::shell-color-scheme', () => this._applyTheme()),
+            stSettings.connect('notify::color-scheme', () => this._appearance.applyTheme()),
+            stSettings.connect('notify::shell-color-scheme', () => this._appearance.applyTheme()),
         ];
-        this._applyTheme();
+        this._appearance.applyTheme();
     }
 
     // Must run after the panel's PopupMenuManager registered this menu: its own
@@ -106,7 +108,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     focusSearchOnOpen() {
         this.menu.connect('open-state-changed', (_menu, open) => {
             if (open && !this._destroyed)
-                this._searchEntry.grab_key_focus();
+                this._header.searchEntry.grab_key_focus();
         });
     }
 
@@ -130,64 +132,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         stack.add_child(this._float.layer);
         section.actor.add_child(stack);
 
-        // Search field.
-        this._searchEntry = new St.Entry({
-            style_class: 'ytmusic-search',
-            hint_text: 'Buscar músicas',
-            can_focus: true,
-            x_expand: true,
-            primary_icon: new St.Icon({icon_name: 'edit-find-symbolic', icon_size: 16}),
-        });
-        this._clearSearchIcon = new St.Icon({icon_name: 'edit-clear-symbolic', icon_size: 16});
-        this._searchEntry.clutter_text.connect('text-changed', () => this._onSearchChanged());
-        this._searchEntry.connect('secondary-icon-clicked', () => this._searchEntry.set_text(''));
-        this._searchEntry.clutter_text.connect('activate', () => this._runSearchNow());
-
-        // Search row: [search field] [settings]
-        this._searchRow = new St.BoxLayout({style_class: 'ytmusic-search-row'});
-        this._searchRow.add_child(this._searchEntry);
-        this._settingsButton = iconButton('emblem-system-symbolic', 'Configurações',
-            () => this._openSettings());
-        this._searchRow.add_child(this._settingsButton);
-        box.add_child(this._searchRow);
-
-        // Header: [back] title [refresh], subtitle on its own line below the
-        // title, so the back arrow stays aligned with the title text.
-        const header = new St.BoxLayout({
-            style_class: 'ytmusic-header',
-            orientation: Clutter.Orientation.VERTICAL,
-        });
-        this._header = header;
-        this._contentBox = box;
-        const titleRow = new St.BoxLayout({style_class: 'ytmusic-title-row'});
-        header.add_child(titleRow);
-
-        this._backButton = iconButton('go-previous-symbolic', 'Voltar',
-            () => this._goBack());
-        this._backButton.visible = false;
-        titleRow.add_child(this._backButton);
-
-        this._title = ellipsized(new St.Label({
-            text: 'Playlists',
-            style_class: 'ytmusic-title',
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        }));
-        titleRow.add_child(this._title);
-
-        // Tracks view only: newest first (the playlist's order) or oldest first.
-        this._sortButton = iconButton('view-sort-descending-symbolic', '',
-            () => this._tracksView.toggleOldestFirst());
-        this._sortButton.visible = false;
-        titleRow.add_child(this._sortButton);
-
-        this._refreshButton = iconButton('view-refresh-symbolic', 'Atualizar',
-            () => this._refresh());
-        titleRow.add_child(this._refreshButton);
-
-        this._subtitle = ellipsized(new St.Label({style_class: 'ytmusic-subtitle', visible: false}));
-        header.add_child(this._subtitle);
-        box.add_child(header);
+        this._header.build(box);
 
         // Scrollable body shared by all views.
         this._scroll = new St.ScrollView({
@@ -220,91 +165,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._updatePlayer(null);
     }
 
-    // Fixed height, so the setting is visible even when the list is short.
-    // The shell caps the whole menu to the screen; when that happens the
-    // list must shrink instead of pushing the mini player out of view.
-    // Sizes go through CSS: setting min_height on a ScrollView directly can
-    // make its minimum exceed its natural height, which aborts the shell.
-    _applyHeight() {
-        const h = this._settings.get_int('popup-height');
-        this._setListHeight(h, h);
-        if (this.menu.isOpen)
-            this._fitHeight();
-    }
-
-    _setListHeight(min, max) {
-        for (const scroll of [this._scroll, this._picker.scroll])
-            scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
-        // The expanded player also takes the space of the mini player it hides.
-        const extra = this._npExtraHeight;
-        this._np.actor.style = `min-height: ${min + extra}px; max-height: ${max + extra}px;`;
-        this._listHeight = min;
-    }
-
-    // Called with the menu open (the actors must be on the stage to measure).
-    _fitHeight() {
-        const h = this._settings.get_int('popup-height');
-        const monitor = Main.layoutManager.findIndexForActor(this);
-        const workArea = Main.layoutManager.getWorkAreaForMonitor(
-            monitor >= 0 ? monitor : Main.layoutManager.primaryIndex);
-        // Height of everything in the popup except the visible list.
-        const scroll = this._overlayActor ?? this._scroll;
-        const [, listNat] = scroll.get_preferred_height(-1);
-        const [, menuNat] = this.menu.box.get_preferred_height(-1);
-        const chrome = menuNat - listNat;
-        // Panel menus keep a bottom margin; leave room for it and the popup border.
-        const available = Math.max(200, workArea.height - chrome - 48);
-        const target = Math.min(h, available);
-        this._setListHeight(target, target);
-    }
-
-    _applyTheme() {
-        const choice = this._settings.get_string('popup-theme');
-        const shellVariant = Main.getStyleVariant() === 'light' ? 'light' : 'dark';
-        const variant = choice === 'auto' ? shellVariant : choice;
-        const box = this.menu.box;
-        box.remove_style_class_name('ytmusic-theme-light');
-        box.remove_style_class_name('ytmusic-theme-dark');
-        box.add_style_class_name(`ytmusic-theme-${variant}`);
-        if (variant !== shellVariant)
-            box.add_style_class_name('ytmusic-theme-forced');
-        else
-            box.remove_style_class_name('ytmusic-theme-forced');
-    }
-
-    _setHeader(title, subtitle = null, canGoBack = false) {
-        this._title.text = title;
-        this._subtitle.text = subtitle ?? '';
-        this._subtitle.visible = !!subtitle;
-        this._backButton.visible = canGoBack;
-        // Indent the subtitle under the title, past the back arrow.
-        if (canGoBack)
-            this._subtitle.add_style_class_name('ytmusic-subtitle-indented');
-        else
-            this._subtitle.remove_style_class_name('ytmusic-subtitle-indented');
-    }
-
     _openSettings() {
         this.menu.close();
         this._extension.openPreferences();
-    }
-
-    // Inside a playlist the search field sits under its name and filters it.
-    _setSearchMode(inPlaylist) {
-        if (inPlaylist)
-            this._contentBox.set_child_above_sibling(this._searchRow, this._header);
-        else
-            this._contentBox.set_child_below_sibling(this._searchRow, this._header);
-        this._settingsButton.visible = !inPlaylist;
-        this._searchEntry.hint_text = inPlaylist ? 'Buscar nesta playlist' : 'Buscar músicas';
-    }
-
-    // Change the field without triggering a search or filter.
-    _setSearchText(text) {
-        this._settingSearchText = true;
-        this._searchEntry.set_text(text);
-        this._searchEntry.secondary_icon = text ? this._clearSearchIcon : null;
-        this._settingSearchText = false;
     }
 
     _showToast(text) {
@@ -324,7 +187,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             return;
         }
         if (this._view === 'search')
-            this._searchEntry.set_text(''); // _onSearchChanged leaves the search view
+            this._header.searchEntry.set_text(''); // _onSearchChanged leaves the search view
         else
             this._playlistsView.show();
     }
@@ -358,7 +221,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     // Shared bookkeeping for async loads: replies from superseded loads are dropped.
     async _load(promise, onData) {
         const serial = ++this._serial;
-        this._refreshButton.reactive = false;
+        this._header.refreshButton.reactive = false;
         try {
             const data = await promise();
             if (serial === this._serial)
@@ -368,7 +231,7 @@ class YTMusicIndicator extends PanelMenu.Button {
                 this._onLoadError(e);
         } finally {
             if (serial === this._serial)
-                this._refreshButton.reactive = true;
+                this._header.refreshButton.reactive = true;
         }
     }
 
@@ -414,16 +277,16 @@ class YTMusicIndicator extends PanelMenu.Button {
     _enterOverlay(track, title, subtitle, actor = this._picker.scroll) {
         if (!this._pickerTrack) {
             this._savedHeader = {
-                title: this._title.text,
-                subtitle: this._subtitle.visible ? this._subtitle.text : null,
-                back: this._backButton.visible,
+                title: this._header.title.text,
+                subtitle: this._header.subtitle.visible ? this._header.subtitle.text : null,
+                back: this._header.backButton.visible,
             };
         }
         this._pickerTrack = track;
-        this._setHeader(title, subtitle, true);
-        this._refreshButton.visible = false;
-        this._sortButton.visible = false;
-        this._searchRow.visible = false;
+        this._header.set(title, subtitle, true);
+        this._header.refreshButton.visible = false;
+        this._header.sortButton.visible = false;
+        this._header.searchRow.visible = false;
         this._scroll.visible = false;
         if (this._overlayActor && this._overlayActor !== actor)
             this._overlayActor.visible = false;
@@ -443,30 +306,30 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._mini.section.actor.show();
             this._playerSeparator.actor.show();
             this._npExtraHeight = 0;
-            const h = this._listHeight ?? this._settings.get_int('popup-height');
-            this._setListHeight(h, h);
+            const h = this._appearance.listHeight ?? this._settings.get_int('popup-height');
+            this._appearance.setListHeight(h, h);
             this._mini.updateMarquee();
         }
         this._np.actor.visible = false;
         this._overlayActor = null;
         this._np.stopProgress();
         this._scroll.visible = true;
-        this._refreshButton.visible = true;
-        this._sortButton.visible = this._view === 'tracks';
-        this._searchRow.visible = true;
+        this._header.refreshButton.visible = true;
+        this._header.sortButton.visible = this._view === 'tracks';
+        this._header.searchRow.visible = true;
         const h = this._savedHeader;
-        this._setHeader(h.title, h.subtitle, h.back);
+        this._header.set(h.title, h.subtitle, h.back);
         this._savedHeader = null;
     }
 
     // -- search ----------------------------------------------------------------
 
     _onSearchChanged() {
-        if (this._settingSearchText)
+        if (this._header.settingSearchText)
             return;
         this._closePicker();
-        const text = this._searchEntry.get_text();
-        this._searchEntry.secondary_icon = text ? this._clearSearchIcon : null;
+        const text = this._header.searchEntry.get_text();
+        this._header.searchEntry.secondary_icon = text ? this._header.clearSearchIcon : null;
 
         if (this._view === 'tracks')
             this._tracksView.scheduleFilter(text);
@@ -567,6 +430,8 @@ class YTMusicIndicator extends PanelMenu.Button {
     destroy() {
         this._destroyed = true;
         this._serial++;
+        this._header.destroy();
+        this._appearance.destroy();
         this._mini.destroy();
         this._np.destroy();
         this._playlistsView.destroy();

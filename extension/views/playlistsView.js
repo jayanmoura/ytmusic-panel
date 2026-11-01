@@ -18,10 +18,10 @@ export class PlaylistsView {
         indicator._view = 'playlists';
         indicator._playlist = null;
         indicator._tracksView.reset();
-        indicator._setSearchText('');
-        indicator._setSearchMode(false);
-        indicator._sortButton.visible = false;
-        indicator._setHeader('Playlists');
+        indicator._header.setSearchText('');
+        indicator._header.setSearchMode(false);
+        indicator._header.sortButton.visible = false;
+        indicator._header.set('Playlists');
         if (indicator._playlists)
             this.render();
         this.load(false);

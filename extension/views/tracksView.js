@@ -45,13 +45,13 @@ export class TracksView {
         indicator._playlist = playlist;
         this._tracks = [];
         this._trackFilter = '';
-        indicator._setSearchText('');
-        indicator._setSearchMode(true);
+        indicator._header.setSearchText('');
+        indicator._header.setSearchMode(true);
         this._oldestFirst = false;
         this._tracksComplete = false;
         this._updateSortButton();
-        indicator._sortButton.visible = true;
-        indicator._setHeader(playlist.title, null, true);
+        indicator._header.sortButton.visible = true;
+        indicator._header.set(playlist.title, null, true);
         indicator._showLoading('Carregando músicas…');
         this.load(false);
     }
@@ -97,7 +97,7 @@ export class TracksView {
     }
 
     _updateTracksSubtitle(data) {
-        const subtitle = this._indicator._subtitle;
+        const subtitle = this._indicator._header.subtitle;
         const count = data.complete ? data.tracks.length : data.count;
         subtitle.text = count !== null && count !== undefined ? trackCountText(count) : '';
         subtitle.visible = !!subtitle.text;
@@ -155,7 +155,7 @@ export class TracksView {
 
     // Reversing only makes sense with the whole list, so it waits for it.
     _updateSortButton() {
-        const button = this._indicator._sortButton;
+        const button = this._indicator._header.sortButton;
         button.child.icon_name = this._oldestFirst
             ? 'view-sort-ascending-symbolic' : 'view-sort-descending-symbolic';
         button.accessible_name = this._oldestFirst

@@ -120,12 +120,12 @@ export class NowPlaying {
         // (the search row is hidden by the overlay too)
         const playerSection = indicator._mini.section;
         indicator._npExtraHeight = playerSection.actor.height +
-            indicator._playerSeparator.actor.height + indicator._searchRow.height +
-            (indicator._subtitle.visible ? indicator._subtitle.height : 0);
+            indicator._playerSeparator.actor.height + indicator._header.searchRow.height +
+            (indicator._header.subtitle.visible ? indicator._header.subtitle.height : 0);
         playerSection.actor.hide();
         indicator._playerSeparator.actor.hide();
-        const h = indicator._listHeight ?? indicator._settings.get_int('popup-height');
-        indicator._setListHeight(h, h);
+        const h = indicator._appearance.listHeight ?? indicator._settings.get_int('popup-height');
+        indicator._appearance.setListHeight(h, h);
         indicator._enterOverlay(NOW_PLAYING, 'Tocando agora', null, this.actor);
         this._nowPlayingKey = null;
         this._npCoverUrl = undefined; // re-create the cover at the current size
@@ -170,7 +170,7 @@ export class NowPlaying {
                     child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
                 });
             // As big as the popup height allows, leaving room for the rest.
-            const height = (indicator._listHeight ?? 560) + indicator._npExtraHeight;
+            const height = (indicator._appearance.listHeight ?? 560) + indicator._npExtraHeight;
             const size = Math.max(120, Math.min(300, height - NOW_PLAYING_CHROME));
             cover._baseStyle = `width: ${size}px; height: ${size}px;`;
             cover.style = cover._baseStyle;

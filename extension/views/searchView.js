@@ -44,7 +44,7 @@ export class SearchView {
             GLib.source_remove(this._searchTimeoutId);
             this._searchTimeoutId = 0;
         }
-        const query = this._indicator._searchEntry.get_text().trim();
+        const query = this._indicator._header.searchEntry.get_text().trim();
         if (query)
             this._search(query);
     }
@@ -58,7 +58,7 @@ export class SearchView {
         }
         this._query = query;
         this._results = [];
-        indicator._setHeader('Resultados', `"${query}"`, true);
+        indicator._header.set('Resultados', `"${query}"`, true);
         indicator._showLoading('Buscando…');
         return indicator._load(
             () => indicator._client.call('Search', query),
