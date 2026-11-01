@@ -18,7 +18,11 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
         const settings = this.getSettings();
         const client = new YTMusicClient();
         window._settings = settings;
+        // A new preferences object is created per window. Replies that land
+        // after the window closed must not touch its widgets.
+        this._destroyed = false;
         window.connect('close-request', () => {
+            this._destroyed = true;
             client.destroy();
             return false;
         });
@@ -71,6 +75,8 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
         this._handle.visible = false;
         try {
             const account = await client.call('GetAccount');
+            if (this._destroyed)
+                return;
             this._name.label = account.name ?? 'Conta do YouTube Music';
             this._avatar.text = account.name ?? '';
             this._handle.label = account.handle ?? '';
@@ -84,7 +90,7 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
                 }
             }
         } catch (e) {
-            if (e.code === 'cancelled')
+            if (e.code === 'cancelled' || this._destroyed)
                 return;
             this._avatar.text = '';
             this._avatar.custom_image = null;
@@ -177,6 +183,8 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
         login.add(browserRow);
         let browsers = [];
         client.call('ListBrowsers').then(data => {
+            if (this._destroyed)
+                return;
             browsers = data.browsers;
             browserRow.model = Gtk.StringList.new(browsers.map(b => b.label));
             browserRow.selected = Math.max(0, browsers.findIndex(b => b.id === data.current));
@@ -184,7 +192,7 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
             if (browsers.length === 0)
                 browserRow.subtitle = 'Nenhum navegador compatível encontrado.';
         }).catch(e => {
-            if (e.code !== 'cancelled')
+            if (e.code !== 'cancelled' && !this._destroyed)
                 browserRow.subtitle = 'O serviço ytmusic-daemon não respondeu.';
         });
 
@@ -200,10 +208,12 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
             loginButton.title = 'Entrando…';
             try {
                 const account = await client.call('LoginWithBrowser', browser.id);
+                if (this._destroyed)
+                    return;
                 window.add_toast(new Adw.Toast({title: `Conectado como ${account.name ?? 'você'}`}));
                 this._loadProfile(client);
             } catch (e) {
-                if (e.code === 'cancelled')
+                if (e.code === 'cancelled' || this._destroyed)
                     return;
                 window.add_toast(new Adw.Toast({title: e.message, timeout: 6}));
             }
@@ -234,10 +244,12 @@ export default class YTMusicPanelPreferences extends ExtensionPreferences {
         logoutButton.connect('activated', async () => {
             try {
                 await client.call('Logout');
+                if (this._destroyed)
+                    return;
                 window.add_toast(new Adw.Toast({title: 'Você saiu da conta neste app'}));
                 this._loadProfile(client);
             } catch (e) {
-                if (e.code !== 'cancelled')
+                if (e.code !== 'cancelled' && !this._destroyed)
                     window.add_toast(new Adw.Toast({title: e.message}));
             }
         });
