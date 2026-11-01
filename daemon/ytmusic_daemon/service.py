@@ -22,8 +22,11 @@ from gi.repository import Gio, GLib  # noqa: E402
 
 from . import BUS_NAME, INTERFACE, OBJECT_PATH  # noqa: E402
 from .client import AuthError, Client, DuplicateError, ServiceError, UnavailableError  # noqa: E402
+from . import browser_login  # noqa: E402
+from .browser_login import BrowserLoginError  # noqa: E402
 from .covers import CoverCache  # noqa: E402
 from .player import Player, PlayerError  # noqa: E402
+from .resolver import Resolver  # noqa: E402
 
 log = logging.getLogger("ytmusic-daemon")
 
@@ -69,6 +72,33 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="urls_json" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="Prepare">
+      <arg type="s" name="video_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="Enqueue">
+      <arg type="s" name="video_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="PlayNext">
+      <arg type="s" name="video_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="RemoveFromPlaylist">
+      <arg type="s" name="playlist_id" direction="in"/>
+      <arg type="s" name="video_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="ListBrowsers">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="LoginWithBrowser">
+      <arg type="s" name="browser" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="Logout">
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <method name="GetAccount">
       <arg type="s" name="json" direction="out"/>
     </method>
@@ -89,7 +119,10 @@ INTROSPECTION_XML = f"""
 </node>
 """
 
-AUTH_MESSAGE = "Faça login com ytmusic-daemon-login."
+AUTH_MESSAGE = "Faça login nas configurações da extensão."
+# How long a play request waits for the stream to resolve here before letting
+# mpv resolve it itself (slower, but always works).
+PLAY_RESOLVE_TIMEOUT = 5
 
 
 def ok(data) -> str:
@@ -108,7 +141,10 @@ class Service:
     def __init__(self, loop: GLib.MainLoop):
         self.loop = loop
         self.client = Client()
-        self.player = Player(on_change=self._on_player_change)
+        self.client.reauth = self._reauth
+        self.player = Player(on_change=self._on_player_change,
+                             on_track_loaded=self._on_track_loaded)
+        self.resolver = Resolver(on_resolved=self.player.preload)
         self.covers = CoverCache()
         self._playback_emit_id = 0
         self._last_playback_json = None
@@ -126,10 +162,15 @@ class Service:
         # name -> callable(*args) -> json str; blocking ones go to the pool.
         self._sync_methods = {
             "GetStatus": self._get_status,
+            "Prepare": self._prepare,
+            "ListBrowsers": lambda: ok({
+                "browsers": browser_login.installed_browsers(),
+                "current": browser_login.saved_browser(),
+            }),
         }
         self._async_methods = {
-            "GetPlaylists": lambda: ok(self.client.get_playlists()),
-            "RefreshPlaylists": lambda: ok(self.client.get_playlists(force=True)),
+            "GetPlaylists": lambda: ok(self._get_playlists()),
+            "RefreshPlaylists": lambda: ok(self._get_playlists(force=True)),
             "GetPlaylistTracks": lambda pid: ok(self.client.get_playlist_tracks(pid)),
             "RefreshPlaylistTracks": lambda pid: ok(
                 self.client.get_playlist_tracks(pid, force=True)),
@@ -138,6 +179,11 @@ class Service:
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
             "AddToPlaylist": lambda pid, vid: ok(self._add_to_playlist(pid, vid)),
+            "RemoveFromPlaylist": lambda pid, vid: ok(self._remove_from_playlist(pid, vid)),
+            "Enqueue": lambda vid: ok(self._enqueue(vid, play_next=False)),
+            "PlayNext": lambda vid: ok(self._enqueue(vid, play_next=True)),
+            "LoginWithBrowser": lambda browser: ok(self._login_with_browser(browser)),
+            "Logout": lambda: ok(self._logout()),
             "GetCovers": lambda urls: ok(self._get_covers(urls)),
             "TogglePause": lambda: self._control(self.player.toggle_pause),
             "Next": lambda: self._control(self.player.next),
@@ -177,7 +223,7 @@ class Service:
         except AuthError:
             result = err("auth_required", AUTH_MESSAGE)
             GLib.idle_add(self._emit_auth_required)
-        except BadRequest as e:
+        except (BadRequest, BrowserLoginError) as e:
             result = err("bad_request", str(e))
         except DuplicateError:
             result = err("duplicate", "Essa música já está na playlist.")
@@ -231,7 +277,7 @@ class Service:
     def _warm_up(self):
         self.covers.prune()
         try:
-            playlists = self.client.get_playlists()
+            playlists = self._get_playlists()
             log.info("cache warmed: %d playlists", len(playlists))
         except AuthError:
             log.warning("not logged in: run ytmusic-daemon-login")
@@ -248,6 +294,25 @@ class Service:
             "playback": self.player.state(),
         })
 
+    def _get_playlists(self, force: bool = False) -> list[dict]:
+        playlists = self.client.get_playlists(force=force)
+        self.client.prefetch_playlists(playlists)
+        return playlists
+
+    # -- playback ----------------------------------------------------------------
+
+    def _prepare(self, video_id: str) -> str:
+        """The user is about to pick this track (e.g. hovering it): resolve it now."""
+        if video_id:
+            self.resolver.prefetch(video_id)
+        return ok(None)
+
+    def _on_track_loaded(self, index: int) -> None:
+        # Resolve the next track while this one plays, so it starts without a gap.
+        upcoming = self.player.track_at(index + 1)
+        if upcoming:
+            self.resolver.prefetch(upcoming["videoId"])
+
     def _play_playlist(self, playlist_id: str, start_index: int) -> dict:
         data = self.client.get_playlist_tracks(playlist_id)
         if not data["complete"] and start_index >= len(data["tracks"]):
@@ -262,6 +327,7 @@ class Service:
         if first is None:
             raise BadRequest("Nenhuma música disponível para tocar.")
         start = next(i for i, t in enumerate(playable) if t is first)
+        self.resolver.resolve(first["videoId"], PLAY_RESOLVE_TIMEOUT)
 
         with self._play_lock:
             self._play_gen += 1
@@ -302,6 +368,56 @@ class Service:
         self.client.add_to_playlist(playlist_id, video_id)
         return {"playlist": target["title"]}
 
+    def _enqueue(self, video_id: str, play_next: bool) -> dict:
+        if not video_id:
+            raise BadRequest("Música inválida.")
+        track = self.client.track_info(video_id)
+        self.resolver.prefetch(video_id)
+        with self._play_lock:
+            if play_next:
+                self.player.play_next(track)
+            else:
+                self.player.enqueue(track)
+        return {"title": track.get("title")}
+
+    def _remove_from_playlist(self, playlist_id: str, video_id: str) -> dict:
+        if not playlist_id or not video_id:
+            raise BadRequest("Playlist ou música inválida.")
+        playlists = {p["id"]: p for p in self.client.get_playlists()}
+        target = playlists.get(playlist_id)
+        if target is None:
+            raise BadRequest("Playlist não encontrada.")
+        if not target["owned"] and playlist_id != "LM":
+            raise BadRequest("Você só pode remover músicas das suas playlists.")
+        self.client.remove_from_playlist(playlist_id, video_id)
+        return {"playlist": target["title"]}
+
+    # -- login -------------------------------------------------------------------
+
+    def _login_with_browser(self, browser: str) -> dict:
+        browser_login.login_with_browser(browser)
+        self.client.reset()
+        account = self._get_account()  # also verifies the new credentials
+        self._pool.submit(self._warm_up)
+        return account
+
+    def _logout(self) -> None:
+        browser_login.logout()
+        self.client.reset()
+        GLib.idle_add(self._emit_auth_required)
+
+    def _reauth(self) -> bool:
+        """Credentials rejected: take a fresh copy from the login's browser."""
+        browser = browser_login.saved_browser()
+        if not browser:
+            return False
+        try:
+            browser_login.login_with_browser(browser)
+        except BrowserLoginError:
+            return False
+        log.info("credentials renewed from the browser")
+        return True
+
     def _get_covers(self, urls_json: str) -> dict:
         try:
             urls = json.loads(urls_json)
@@ -326,6 +442,7 @@ class Service:
     def _play_track(self, video_id: str) -> dict:
         if not video_id:
             raise BadRequest("Música inválida.")
+        self.resolver.resolve(video_id, PLAY_RESOLVE_TIMEOUT)
         with self._play_lock:
             self._play_gen += 1
             self.player.play([self.client.track_info(video_id)], 0)
@@ -340,6 +457,7 @@ class Service:
             self.connection.unregister_object(self._reg_id)
         self._pool.shutdown(wait=False, cancel_futures=True)
         self.client.shutdown()
+        self.resolver.shutdown()
         self.player.shutdown()
         self.covers.shutdown()
 

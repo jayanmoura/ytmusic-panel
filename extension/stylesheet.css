@@ -153,6 +153,24 @@
   padding: 8px;
 }
 
+.ytmusic-toast {
+  margin: 6px 0 2px 0;
+  padding: 6px 14px;
+  border-radius: 99px;
+  font-size: 0.9em;
+  font-weight: bold;
+}
+
+.ytmusic-action-row .ytmusic-row-content {
+  spacing: 12px;
+}
+
+.ytmusic-row-destructive,
+.ytmusic-row-destructive:hover {
+  color: #e01b24;
+  font-weight: bold;
+}
+
 /* -- dark ------------------------------------------------------------------ */
 
 .ytmusic-theme-dark.ytmusic-theme-forced {
@@ -239,6 +257,11 @@
   color: rgba(255, 255, 255, 0.35);
 }
 
+.ytmusic-theme-dark .ytmusic-toast {
+  background-color: #ffffff;
+  color: #222222;
+}
+
 /* -- light ----------------------------------------------------------------- */
 
 .ytmusic-theme-light.ytmusic-theme-forced {
@@ -323,4 +346,9 @@
 
 .ytmusic-theme-light .ytmusic-cover-placeholder {
   color: rgba(34, 34, 34, 0.35);
+}
+
+.ytmusic-theme-light .ytmusic-toast {
+  background-color: #222222;
+  color: #ffffff;
 }

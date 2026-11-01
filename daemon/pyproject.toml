@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytmusic-daemon"
-version = "1.0.0"
+version = "1.1.0"
 description = "D-Bus service exposing YouTube Music to the ytmusic-panel GNOME extension"
 requires-python = ">=3.12"
-dependencies = ["ytmusicapi>=1.12", "yt-dlp[default]>=2026.10", "deno"]
+# secretstorage lets yt-dlp decrypt Chromium-family cookies (GNOME keyring) for the browser login.
+dependencies = ["ytmusicapi>=1.12", "yt-dlp[default]>=2026.10", "deno", "secretstorage"]
 
 [project.scripts]
 ytmusic-daemon = "ytmusic_daemon.service:main"
@@ -15,3 +16,6 @@ ytmusic-daemon-login = "ytmusic_daemon.login:main"
 
 [tool.setuptools]
 packages = ["ytmusic_daemon"]
+
+[tool.setuptools.package-data]
+ytmusic_daemon = ["preload.lua"]

@@ -34,6 +34,24 @@ const IFACE_XML = `
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
     <method name="GetAccount"><arg type="s" direction="out"/></method>
+    <method name="Prepare">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
+    <method name="Enqueue">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
+    <method name="PlayNext">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
+    <method name="RemoveFromPlaylist">
+      <arg type="s" direction="in"/><arg type="s" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <method name="ListBrowsers"><arg type="s" direction="out"/></method>
+    <method name="LoginWithBrowser">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
+    <method name="Logout"><arg type="s" direction="out"/></method>
     <method name="TogglePause"><arg type="s" direction="out"/></method>
     <method name="Next"><arg type="s" direction="out"/></method>
     <method name="Previous"><arg type="s" direction="out"/></method>

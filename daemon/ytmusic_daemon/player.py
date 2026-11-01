@@ -26,6 +26,7 @@ MPRIS_PLUGIN_CANDIDATES = [
     Path("/usr/lib/mpv-mpris/mpris.so"),
     Path("/etc/mpv/scripts/mpris.so"),
 ]
+PRELOAD_SCRIPT = Path(__file__).with_name("preload.lua")
 # Per-process names so a second daemon (e.g. in a nested dev session) can't clash.
 SOCKET_PATH = RUNTIME_DIR / f"mpv-{os.getpid()}.sock"
 COMMAND_TIMEOUT = 5.0
@@ -53,8 +54,12 @@ class PlayerError(Exception):
 
 
 class Player:
-    def __init__(self, on_change=None):
+    def __init__(self, on_change=None, on_track_loaded=None):
         self._on_change = on_change  # called from the reader thread
+        # Called with the queue index of each track that starts (own thread).
+        self._on_track_loaded = on_track_loaded
+        # videoId -> resolved stream (see resolver.py), mirrored into mpv.
+        self._preloads: dict[str, dict] = {}
         self._proc: subprocess.Popen | None = None
         self._sock: socket.socket | None = None
         self._reader: threading.Thread | None = None
@@ -100,6 +105,7 @@ class Player:
         ]
         # Debug/testing hook, e.g. YTMUSIC_MPV_EXTRA_ARGS="--ao=null".
         args += shlex.split(os.environ.get("YTMUSIC_MPV_EXTRA_ARGS", ""))
+        args.append(f"--script={PRELOAD_SCRIPT}")
         plugin = next((p for p in MPRIS_PLUGIN_CANDIDATES if p.exists()), None)
         if plugin:
             args.append(f"--script={plugin}")
@@ -132,6 +138,10 @@ class Player:
         self._reader.start()
         for i, prop in enumerate(OBSERVED, start=1):
             self._send(["observe_property", i, prop])
+        now = time.time()
+        for video_id, entry in list(self._preloads.items()):
+            if entry["expires"] > now:
+                self._push_preload(video_id, entry)
         log.info("mpv started (pid %d)", self._proc.pid)
 
     def _stop_process(self) -> None:
@@ -190,6 +200,11 @@ class Player:
             if event == "file-loaded" or msg.get("reason") == "error":
                 self._starting = None
             self._notify()
+        if event == "file-loaded" and self._on_track_loaded:
+            index = self.state().get("index")
+            if index is not None:
+                threading.Thread(target=self._on_track_loaded, args=(index,),
+                                 name="mpv-loaded", daemon=True).start()
         if event == "file-loaded" and self._pending_before:
             gen, before = self._pending_before
             self._pending_before = None
@@ -282,6 +297,50 @@ class Player:
             path = self._write_list(tracks)
             self._send(["loadlist", str(path), "append"])
             self.queue.extend(tracks)
+
+    def enqueue(self, track: dict) -> None:
+        """Add to the end of the queue, or play it if nothing is playing."""
+        with self._lock:
+            if self.state()["state"] == "stopped":
+                self.play([track])
+                return
+            self._send(["loadfile", track_url(track["videoId"]), "append"])
+            self.queue.append(track)
+        self._notify()
+
+    def play_next(self, track: dict) -> None:
+        """Insert right after the current track, or play it if nothing is playing."""
+        with self._lock:
+            if self.state()["state"] == "stopped":
+                self.play([track])
+                return
+            pos = self._props.get("playlist-pos")
+            if not isinstance(pos, int) or pos < 0:
+                pos = (self._starting or 0) - self._pos_offset
+            self._send(["loadfile", track_url(track["videoId"]), "insert-next"])
+            self.queue.insert(pos + self._pos_offset + 1, track)
+        self._notify()
+
+    # -- preloaded streams ---------------------------------------------------------
+
+    def preload(self, video_id: str, entry: dict) -> None:
+        """Hand a resolved stream to mpv; preload.lua uses it when the track opens."""
+        with self._lock:
+            now = time.time()
+            self._preloads = {k: v for k, v in self._preloads.items() if v["expires"] > now}
+            self._preloads[video_id] = entry
+            if self._running():
+                self._push_preload(video_id, entry)
+
+    def _push_preload(self, video_id: str, entry: dict) -> None:
+        try:
+            self._send(["set_property", f"user-data/ytmusic/{video_id}", entry])
+        except PlayerError as e:
+            log.debug("could not hand a stream to mpv: %s", e)
+
+    def track_at(self, index: int) -> dict | None:
+        with self._lock:
+            return self.queue[index] if 0 <= index < len(self.queue) else None
 
     # -- controls ----------------------------------------------------------------
 

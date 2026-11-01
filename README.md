@@ -42,9 +42,19 @@ Para desenvolver, use `./install.sh --dev`: a extensão vira um link simbólico 
 
 ## Login
 
-O serviço usa os cabeçalhos de uma requisição do navegador logado no YouTube Music (método "browser" do ytmusicapi). As credenciais ficam em `~/.config/ytmusic-daemon/browser.json`, com permissão 600, e nunca aparecem nos logs.
+O serviço usa a sessão do YouTube que já está aberta no seu navegador (os cookies dele). Não precisa copiar nada:
 
-Rode **num terminal seu**:
+1. No navegador, abra https://music.youtube.com e confira se está conectado na sua conta.
+2. Abra as configurações da extensão (engrenagem ao lado da busca, ou `gnome-extensions prefs ytmusic-panel@jayan`).
+3. Em **Conta e serviço**, escolha o navegador e clique em **Entrar com o navegador**.
+
+Funciona com Firefox (inclusive o snap) e com os navegadores baseados no Chromium (Chrome, Chromium, Brave, Edge, Vivaldi, Opera); só o Firefox foi testado. As credenciais ficam em `~/.config/ytmusic-daemon/browser.json`, com permissão 600, e nunca aparecem nos logs. O serviço confere a sessão antes de trocar as credenciais em uso.
+
+**A sessão é a mesma do navegador.** Se você sair da conta do YouTube naquele navegador, o app também é desconectado; para voltar, entre de novo no navegador e clique em **Entrar com o navegador**. Enquanto você estiver conectado lá, o serviço renova o acesso sozinho quando o YouTube recusar as credenciais. **Sair da conta neste app** apaga as credenciais só daqui.
+
+### Login manual (alternativa)
+
+Copiando os cabeçalhos de uma requisição do navegador. Rode **num terminal seu**:
 
 ```bash
 ~/.local/share/ytmusic-daemon/venv/bin/ytmusic-daemon-login
@@ -52,7 +62,7 @@ Rode **num terminal seu**:
 
 E siga os passos:
 
-1. Abra https://music.youtube.com logado na sua conta (o Firefox é o mais confiável para esse formato).
+1. Abra https://music.youtube.com logado na sua conta.
 2. Abra as ferramentas de desenvolvedor (F12), aba **Rede** (Network), e filtre por `browse`.
 3. Clique em **Biblioteca** na página para gerar uma requisição.
 4. Escolha uma requisição **POST** para `browse?...` com status 200. Ela precisa ter os cabeçalhos `Cookie` e `X-Goog-AuthUser`.
@@ -61,18 +71,15 @@ E siga os passos:
    - Chrome: aba **Headers**, selecione todo o bloco **Request Headers** e copie.
 6. Cole no terminal, aperte Enter e depois **Ctrl+D**.
 
-O script grava o arquivo, testa o acesso e mostra quantas playlists encontrou. O serviço percebe o arquivo novo sozinho, sem reiniciar.
-
-O login vale enquanto a sessão do navegador valer. Se você sair da conta naquele navegador, os cookies deixam de valer e o popup vai pedir login de novo.
-
 ## Uso
 
 Clique no ícone no painel.
 
-- **Busca**: o campo no topo já recebe o foco; os resultados aparecem quando você para de digitar (ou com Enter).
+- **Busca**: o campo no topo já recebe o foco; os resultados aparecem quando você para de digitar (ou com Enter). Dentro de uma playlist, o campo fica abaixo do nome dela e filtra só as músicas da playlist (título, artista ou álbum, sem diferenciar acentos).
 - **Playlists**: "Músicas que gostei" fica sempre no topo. Clique numa playlist para ver as músicas.
 - **Tocar**: "Tocar tudo" toca a playlist inteira; o ▶ de uma música toca a partir dela e segue a playlist. Num resultado de busca, toca só aquela música.
-- **Adicionar a uma playlist**: o botão **+** de cada música abre a lista das suas playlists. Adicionar a "Músicas que gostei" equivale a curtir a música.
+- **Menu de uma música** (⋮, dentro de uma playlist): adicionar à fila, tocar a seguir, adicionar a outra playlist, compartilhar (copia o link `music.youtube.com` e mostra "Link copiado") e remover da playlist (só nas suas playlists; pede um segundo clique para confirmar). Remover de "Músicas que gostei" equivale a descurtir.
+- **Adicionar a uma playlist**: nos resultados da busca, o botão **+** abre a lista das suas playlists. Adicionar a "Músicas que gostei" equivale a curtir a música.
 - **Mini player** (rodapé): anterior, play/pause e próxima. "Anterior" com mais de 3 segundos de música volta ao começo dela.
 - **Teclas de mídia** e o controle de mídia do GNOME (menu de data e hora) controlam o mesmo player, que aparece como `org.mpris.MediaPlayer2.mpv.ytmusic`.
 
@@ -101,10 +108,10 @@ busctl --user call io.github.jayan.YTMusic /io/github/jayan/YTMusic io.github.ja
 
 ### Problemas comuns
 
-- **"Você não está conectado"**: rode o `ytmusic-daemon-login` de novo.
+- **"Você não está conectado"**: confira se está conectado no navegador e clique em **Entrar com o navegador** nas configurações.
 - **"O serviço ytmusic-daemon não está respondendo"**: `systemctl --user restart ytmusic-daemon` e veja o journal.
 - **A música não toca, ou o journal mostra "track failed to play"**: o YouTube muda as proteções com frequência. Atualize o yt-dlp com `./scripts/install-daemon.sh` (ele sempre instala a versão mais nova) e reinicie o serviço.
-- **Demora para começar a tocar**: são cerca de 3 a 4 segundos por música, o tempo do yt-dlp obter o áudio. É esperado nesta versão.
+- **Demora para começar a tocar**: obter o áudio de uma música leva cerca de 2 a 4 segundos. Para esconder isso, o serviço começa a buscar o áudio quando você para o mouse sobre uma música, e busca a próxima da fila enquanto a atual toca; nesses casos ela começa em menos de 1 segundo.
 
 ## Desinstalação
 
@@ -127,7 +134,10 @@ daemon/ytmusic_daemon/  serviço Python
   client.py             ytmusicapi, caches
   player.py             mpv via IPC
   covers.py             cache de capas em disco
-  login.py              ytmusic-daemon-login
+  login.py              ytmusic-daemon-login (login manual)
+  browser_login.py      login com os cookies do navegador
+  resolver.py           obtém o áudio com antecedência (yt-dlp como biblioteca)
+  preload.lua           script do mpv que usa o áudio já obtido
 scripts/
   install-daemon.sh     venv, pacote e serviço systemd
   dev-link.sh           liga a extensão a ~/.local/share e compila o schema

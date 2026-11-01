@@ -5,6 +5,7 @@ Never log headers, cookies or the auth file contents.
 
 import logging
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
@@ -24,6 +25,8 @@ SEARCH_TTL = 120
 SEARCH_LIMIT = 30
 # First page served immediately; the rest is fetched in the background.
 FIRST_PAGE_LIMIT = 100
+# Minimum seconds between automatic re-logins.
+REAUTH_INTERVAL = 60
 
 
 class AuthError(Exception):
@@ -57,6 +60,9 @@ class Client:
         self._search_cache = TTLCache(SEARCH_TTL)
         self._full_fetches: dict[str, Future] = {}
         self._bg = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ytm-bg")
+        # Callable that renews the credentials file; returns True on success.
+        self.reauth = None
+        self._last_reauth = -REAUTH_INTERVAL
         # videoId -> shaped track, so PlayTrack can show metadata for known songs.
         self._known_tracks: dict[str, dict] = {}
 
@@ -103,7 +109,33 @@ class Client:
             pass
 
     def _call(self, fn, search: bool = False):
-        """Run fn(yt) translating library errors into AuthError/ServiceError."""
+        """Run fn(yt) translating library errors into AuthError/ServiceError.
+
+        If the credentials are rejected and `reauth` can renew them (e.g. from
+        the browser the login came from), retry once.
+        """
+        try:
+            return self._call_once(fn, search)
+        except AuthError:
+            if not self._try_reauth():
+                raise
+        return self._call_once(fn, search)
+
+    def _try_reauth(self) -> bool:
+        if self.reauth is None:
+            return False
+        with self._lock:
+            now = time.monotonic()
+            if now - self._last_reauth < REAUTH_INTERVAL:
+                return False
+            self._last_reauth = now
+        try:
+            return bool(self.reauth())
+        except Exception:
+            log.warning("automatic re-login failed")
+            return False
+
+    def _call_once(self, fn, search: bool = False):
         yt = self._ensure_client()
         if search:
             yt = self._yt_search
@@ -156,33 +188,50 @@ class Client:
     def get_playlist_tracks(self, playlist_id: str, force: bool = False) -> dict:
         """Full list if cached, otherwise the first page with complete=False.
 
-        Calling again while the background fetch runs waits for it.
+        An expired cached list is still returned right away and refreshed in
+        the background. Calling again while a background fetch runs waits for it.
         """
         if force:
             self._tracks_cache.invalidate(playlist_id)
-        cached = self._tracks_cache.get(playlist_id)
+        cached, fresh = self._tracks_cache.get_stale(playlist_id)
         if cached:
+            if not fresh:
+                self._fetch_full_in_background(playlist_id)
             return cached
 
         with self._lock:
             pending = self._full_fetches.get(playlist_id)
-        if pending:
-            return pending.result()
+        if pending and (result := pending.result()):
+            return result
 
         first = self._fetch_playlist(playlist_id, FIRST_PAGE_LIMIT)
         if first["complete"]:
             self._tracks_cache.set(playlist_id, first)
             return first
 
+        self._fetch_full_in_background(playlist_id)
+        return first
+
+    def _fetch_full_in_background(self, playlist_id: str) -> None:
         with self._lock:
             if playlist_id not in self._full_fetches:
                 fut = self._bg.submit(self._fetch_full, playlist_id)
                 self._full_fetches[playlist_id] = fut
                 fut.add_done_callback(lambda _f: self._forget_fetch(playlist_id))
-        return first
 
-    def _fetch_full(self, playlist_id: str) -> dict:
-        result = self._fetch_playlist(playlist_id, None)
+    def prefetch_playlists(self, playlists: list[dict]) -> None:
+        """Load every playlist in the background so opening one is instant."""
+        for p in playlists:
+            if self._tracks_cache.get(p["id"]) is None:
+                self._fetch_full_in_background(p["id"])
+
+    def _fetch_full(self, playlist_id: str) -> dict | None:
+        try:
+            result = self._fetch_playlist(playlist_id, None)
+        except (AuthError, ServiceError):
+            # Prefetches can fail quietly; a direct request will report the error.
+            log.warning("background playlist fetch failed")
+            return None
         self._tracks_cache.set(playlist_id, result)
         log.info("playlist fully loaded: %d tracks", len(result["tracks"]))
         return result
@@ -242,6 +291,38 @@ class Client:
         self._cache.invalidate("playlists")  # track counts changed
         log.info("track added to a playlist")
 
+    def remove_from_playlist(self, playlist_id: str, video_id: str) -> None:
+        if playlist_id == LIKED_PLAYLIST_ID:
+            self._call(lambda yt: yt.rate_song(video_id, LikeStatus.INDIFFERENT))
+        else:
+            cached, _fresh = self._tracks_cache.get_stale(playlist_id)
+            track = next((t for t in (cached or {}).get("tracks", [])
+                          if t["videoId"] == video_id and t.get("setVideoId")), None)
+            if track is None:
+                raise UnavailableError("track not found in playlist")
+            item = {"videoId": video_id, "setVideoId": track["setVideoId"]}
+            result = self._call(lambda yt: yt.remove_playlist_items(playlist_id, [item]))
+            status = result if isinstance(result, str) else result.get("status", "")
+            if "SUCCEEDED" not in str(status):
+                log.warning("remove from playlist not confirmed (status %r)", status or None)
+                raise ServiceError("remove not confirmed")
+        # Drop it locally right away; counts are refetched with the playlists.
+        cached, _fresh = self._tracks_cache.get_stale(playlist_id)
+        if cached:
+            tracks = [t for t in cached["tracks"] if t["videoId"] != video_id]
+            count = cached["count"] - 1 if isinstance(cached["count"], int) else None
+            self._tracks_cache.set(playlist_id, dict(cached, tracks=tracks, count=count))
+        self._cache.invalidate("playlists")
+        log.info("track removed from a playlist")
+
+    def reset(self) -> None:
+        """Forget the account (after logout or a new login)."""
+        with self._lock:
+            self._yt = self._yt_search = None
+            self._auth_mtime = None
+        for cache in (self._cache, self._tracks_cache, self._search_cache):
+            cache.invalidate()
+
     def _remember(self, tracks: list[dict]) -> None:
         with self._lock:
             for t in tracks:
@@ -287,6 +368,8 @@ def _shape_track(t: dict) -> dict:
         "available": bool(t.get("isAvailable", True)) and bool(t.get("videoId")),
         "explicit": bool(t.get("isExplicit")),
         "thumbnail": _best_thumb(t),
+        # Needed to remove the item from a playlist; only set for owned ones.
+        "setVideoId": t.get("setVideoId"),
     }
 
 

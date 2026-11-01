@@ -29,6 +29,14 @@ class TTLCache:
                 return hit[1]
         return None
 
+    def get_stale(self, key: str) -> tuple[Any | None, bool]:
+        """(value, fresh): expired entries are still returned, with fresh=False."""
+        with self._lock:
+            hit = self._data.get(key)
+        if not hit:
+            return None, False
+        return hit[1], time.monotonic() - hit[0] < self.ttl
+
     def set(self, key: str, value: Any) -> None:
         with self._lock:
             self._data[key] = (time.monotonic(), value)
