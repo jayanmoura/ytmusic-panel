@@ -14,6 +14,9 @@ import {YTMusicClient} from './ytmusicClient.js';
 const LIKED_PLAYLIST_ID = 'LM';
 const HIDDEN_PLAYLIST_IDS = new Set(['SE']); // "Episódios para mais tarde"
 
+// Rows are created in pages so huge playlists don't stall the shell.
+const TRACKS_PAGE_SIZE = 100;
+
 const numberFormat = new Intl.NumberFormat('pt-BR');
 
 const ERROR_TEXT = {
@@ -28,6 +31,10 @@ const ERROR_TEXT = {
     network: [
         'Não foi possível falar com o YouTube Music.',
         'Verifique a conexão e clique em atualizar.',
+    ],
+    unavailable: [
+        'Conteúdo indisponível no YouTube Music.',
+        'A playlist pode ter sido removida ou estar privada.',
     ],
     internal: [
         'O serviço encontrou um erro.',
@@ -47,6 +54,11 @@ function trackCountText(count) {
     return `${numberFormat.format(count)} músicas`;
 }
 
+function ellipsized(label) {
+    label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+    return label;
+}
+
 const YTMusicIndicator = GObject.registerClass(
 class YTMusicIndicator extends PanelMenu.Button {
     _init(extension) {
@@ -56,8 +68,15 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._settings = extension.getSettings();
         this._client = new YTMusicClient();
         this._client.onAuthRequired = () => this._onAuthRequired();
+
+        this._view = 'playlists';
         this._playlists = null;
-        this._loadSerial = 0;
+        this._playlist = null; // playlist shown in the tracks view
+        this._tracks = [];
+        this._renderedTracks = 0;
+        this._moreButton = null;
+        // Bumped on every navigation/load; stale async replies are dropped.
+        this._serial = 0;
 
         this.add_child(new St.Icon({
             gicon: this._icon('ytmusic-symbolic'),
@@ -68,7 +87,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._buildContent();
 
         this.menu.connect('open-state-changed', (_menu, open) => {
-            if (open)
+            if (open && this._view === 'playlists')
                 this._loadPlaylists(false);
         });
 
@@ -81,6 +100,18 @@ class YTMusicIndicator extends PanelMenu.Button {
         return Gio.icon_new_for_string(`${this._extension.path}/icons/${name}.svg`);
     }
 
+    _iconButton(iconName, accessibleName, callback) {
+        const button = new St.Button({
+            style_class: 'ytmusic-icon-button',
+            can_focus: true,
+            accessible_name: accessibleName,
+            y_align: Clutter.ActorAlign.CENTER,
+            child: new St.Icon({icon_name: iconName, icon_size: 16}),
+        });
+        button.connect('clicked', callback);
+        return button;
+    }
+
     _buildContent() {
         const section = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(section);
@@ -91,29 +122,33 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         section.actor.add_child(box);
 
-        // Header: view title + refresh.
+        // Header: [back] title/subtitle [refresh]
         const header = new St.BoxLayout({style_class: 'ytmusic-header'});
-        this._title = new St.Label({
-            text: 'Playlists',
-            style_class: 'ytmusic-title',
+
+        this._backButton = this._iconButton('go-previous-symbolic', 'Voltar',
+            () => this._showPlaylists());
+        this._backButton.visible = false;
+        header.add_child(this._backButton);
+
+        const titles = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
         });
-        header.add_child(this._title);
+        this._title = ellipsized(new St.Label({text: 'Playlists', style_class: 'ytmusic-title'}));
+        this._subtitle = new St.Label({style_class: 'ytmusic-subtitle', visible: false});
+        titles.add_child(this._title);
+        titles.add_child(this._subtitle);
+        header.add_child(titles);
 
-        this._refreshButton = new St.Button({
-            style_class: 'ytmusic-icon-button',
-            can_focus: true,
-            accessible_name: 'Atualizar',
-            child: new St.Icon({icon_name: 'view-refresh-symbolic', icon_size: 16}),
-        });
-        this._refreshButton.connect('clicked', () => this._loadPlaylists(true));
+        this._refreshButton = this._iconButton('view-refresh-symbolic', 'Atualizar',
+            () => this._refresh());
         header.add_child(this._refreshButton);
         box.add_child(header);
 
-        // Scrollable body.
+        // Scrollable body shared by all views.
         this._scroll = new St.ScrollView({
-            style_class: 'ytmusic-scroll vfade',
+            style_class: 'ytmusic-scroll',
             hscrollbar_policy: St.PolicyType.NEVER,
             vscrollbar_policy: St.PolicyType.AUTOMATIC,
             overlay_scrollbars: true,
@@ -132,37 +167,63 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._scroll.style = `max-height: ${h}px;`;
     }
 
-    // -- data ------------------------------------------------------------------
+    _setHeader(title, subtitle = null, canGoBack = false) {
+        this._title.text = title;
+        this._subtitle.text = subtitle ?? '';
+        this._subtitle.visible = !!subtitle;
+        this._backButton.visible = canGoBack;
+    }
 
-    async _loadPlaylists(force) {
-        const serial = ++this._loadSerial;
+    _clearList() {
+        this._list.destroy_all_children();
+        this._list.style = null;
+        this._moreButton = null;
+        this._scroll.vadjustment.value = 0;
+    }
 
-        if (!this._playlists)
-            this._showMessage('Carregando playlists…');
+    // Loading placeholder that keeps the current height, so the popup doesn't
+    // shrink to a small box and grow back when the content arrives.
+    _showLoading(text) {
+        const height = this._list.height;
+        this._showMessage(text);
+        if (height > 0)
+            this._list.style = `min-height: ${height}px;`;
+    }
+
+    _refresh() {
+        if (this._view === 'tracks')
+            this._loadTracks(true);
+        else
+            this._loadPlaylists(true);
+    }
+
+    // Shared bookkeeping for async loads: replies from superseded loads are dropped.
+    async _load(promise, onData) {
+        const serial = ++this._serial;
         this._refreshButton.reactive = false;
-
         try {
-            const data = await this._client.call(force ? 'RefreshPlaylists' : 'GetPlaylists');
-            if (serial !== this._loadSerial)
-                return;
-            this._playlists = sortPlaylists(data);
-            this._renderPlaylists();
+            const data = await promise();
+            if (serial === this._serial)
+                onData(data, serial);
         } catch (e) {
-            if (e.code === 'cancelled' || serial !== this._loadSerial)
-                return;
-            // Network hiccup with data on screen: keep showing what we have.
-            if (e.code === 'network' && this._playlists)
-                return;
-            if (e.code === 'auth_required')
-                this._playlists = null;
-            const [title, hint] = ERROR_TEXT[e.code] ?? ERROR_TEXT.internal;
-            this._showMessage(title, hint);
-            if (!ERROR_TEXT[e.code])
-                console.warn(`[ytmusic-panel] ${e.code ?? ''} ${e.message}`);
+            if (e.code !== 'cancelled' && serial === this._serial)
+                this._onLoadError(e);
         } finally {
-            if (serial === this._loadSerial && this._refreshButton)
+            if (serial === this._serial)
                 this._refreshButton.reactive = true;
         }
+    }
+
+    _onLoadError(e) {
+        const hasData = this._view === 'playlists' ? !!this._playlists : this._tracks.length > 0;
+        // Network hiccup with data on screen: keep showing what we have.
+        if (e.code === 'network' && hasData)
+            return;
+        if (e.code === 'auth_required')
+            this._playlists = null;
+        if (!ERROR_TEXT[e.code])
+            console.warn(`[ytmusic-panel] ${e.code ?? ''} ${e.message}`);
+        this._showMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
     }
 
     _onAuthRequired() {
@@ -171,10 +232,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._showMessage(...ERROR_TEXT.auth_required);
     }
 
-    // -- rendering -------------------------------------------------------------
-
     _showMessage(title, hint = null) {
-        this._list.destroy_all_children();
+        this._clearList();
         const box = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             style_class: 'ytmusic-message',
@@ -189,8 +248,31 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._list.add_child(box);
     }
 
+    // -- playlists view --------------------------------------------------------
+
+    _showPlaylists() {
+        this._view = 'playlists';
+        this._playlist = null;
+        this._tracks = [];
+        this._setHeader('Playlists');
+        if (this._playlists)
+            this._renderPlaylists();
+        this._loadPlaylists(false);
+    }
+
+    _loadPlaylists(force) {
+        if (!this._playlists)
+            this._showMessage('Carregando playlists…');
+        return this._load(
+            () => this._client.call(force ? 'RefreshPlaylists' : 'GetPlaylists'),
+            data => {
+                this._playlists = sortPlaylists(data);
+                this._renderPlaylists();
+            });
+    }
+
     _renderPlaylists() {
-        this._list.destroy_all_children();
+        this._clearList();
         if (this._playlists.length === 0) {
             this._showMessage('Nenhuma playlist encontrada.');
             return;
@@ -202,14 +284,12 @@ class YTMusicIndicator extends PanelMenu.Button {
     _createPlaylistRow(playlist) {
         const row = new St.BoxLayout({x_expand: true});
 
-        const title = new St.Label({
+        row.add_child(ellipsized(new St.Label({
             text: playlist.title,
             style_class: 'ytmusic-row-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        });
-        title.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        row.add_child(title);
+        })));
 
         if (playlist.id === LIKED_PLAYLIST_ID) {
             row.add_child(new St.Icon({
@@ -226,17 +306,150 @@ class YTMusicIndicator extends PanelMenu.Button {
             }));
         }
 
-        return new St.Button({
+        const button = new St.Button({
             style_class: 'ytmusic-row',
             child: row,
             can_focus: true,
             x_expand: true,
             accessible_name: playlist.title,
         });
+        button.connect('clicked', () => this._showTracks(playlist));
+        return button;
+    }
+
+    // -- tracks view -----------------------------------------------------------
+
+    _showTracks(playlist) {
+        this._view = 'tracks';
+        this._playlist = playlist;
+        this._tracks = [];
+        this._setHeader(playlist.title, null, true);
+        this._showLoading('Carregando músicas…');
+        this._loadTracks(false);
+    }
+
+    _loadTracks(force) {
+        const playlist = this._playlist;
+        const method = force ? 'RefreshPlaylistTracks' : 'GetPlaylistTracks';
+        return this._load(
+            () => this._client.call(method, playlist.id),
+            (data, serial) => {
+                this._tracks = data.tracks;
+                this._updateTracksSubtitle(data);
+                this._renderTracks();
+                if (!data.complete)
+                    this._loadRemainingTracks(playlist, serial);
+            });
+    }
+
+    // The daemon served the first page; a second call waits for the full list.
+    async _loadRemainingTracks(playlist, serial) {
+        try {
+            const data = await this._client.call('GetPlaylistTracks', playlist.id);
+            if (serial !== this._serial)
+                return;
+            this._tracks = data.tracks;
+            this._updateTracksSubtitle(data);
+            this._updateMoreButton();
+        } catch (e) {
+            // The first page is already on screen; just note it.
+            if (e.code !== 'cancelled')
+                console.warn(`[ytmusic-panel] full playlist load failed: ${e.code}`);
+        }
+    }
+
+    _updateTracksSubtitle(data) {
+        const count = data.complete ? data.tracks.length : data.count;
+        this._subtitle.text = count !== null && count !== undefined ? trackCountText(count) : '';
+        this._subtitle.visible = !!this._subtitle.text;
+    }
+
+    _renderTracks() {
+        this._clearList();
+        this._renderedTracks = 0;
+        if (this._tracks.length === 0) {
+            this._showMessage('Esta playlist está vazia.');
+            return;
+        }
+        this._renderMoreTracks();
+    }
+
+    _renderMoreTracks() {
+        this._moreButton?.destroy();
+        this._moreButton = null;
+
+        const end = Math.min(this._renderedTracks + TRACKS_PAGE_SIZE, this._tracks.length);
+        for (let i = this._renderedTracks; i < end; i++)
+            this._list.add_child(this._createTrackRow(this._tracks[i]));
+        this._renderedTracks = end;
+        this._updateMoreButton();
+    }
+
+    _updateMoreButton() {
+        const remaining = this._tracks.length - this._renderedTracks;
+        if (this._renderedTracks === 0 || remaining <= 0) {
+            this._moreButton?.destroy();
+            this._moreButton = null;
+            return;
+        }
+        const label = `Mostrar mais (${numberFormat.format(remaining)} restantes)`;
+        if (this._moreButton) {
+            this._moreButton.label = label;
+            return;
+        }
+        this._moreButton = new St.Button({
+            style_class: 'ytmusic-more-button',
+            label,
+            can_focus: true,
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        this._moreButton.connect('clicked', () => this._renderMoreTracks());
+        this._list.add_child(this._moreButton);
+    }
+
+    _createTrackRow(track) {
+        const row = new St.BoxLayout({x_expand: true});
+
+        const text = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        text.add_child(ellipsized(new St.Label({
+            text: track.title,
+            style_class: 'ytmusic-row-title',
+        })));
+        if (track.artists) {
+            text.add_child(ellipsized(new St.Label({
+                text: track.artists,
+                style_class: 'ytmusic-row-detail',
+            })));
+        }
+        row.add_child(text);
+
+        if (track.duration) {
+            row.add_child(new St.Label({
+                text: track.duration,
+                style_class: 'ytmusic-row-detail',
+                y_align: Clutter.ActorAlign.CENTER,
+            }));
+        }
+
+        const button = new St.Button({
+            style_class: 'ytmusic-row ytmusic-track-row',
+            child: row,
+            can_focus: track.available,
+            reactive: track.available,
+            x_expand: true,
+            accessible_name: track.artists ? `${track.title}, ${track.artists}` : track.title,
+        });
+        if (!track.available)
+            button.add_style_class_name('ytmusic-row-unavailable');
+        return button;
     }
 
     destroy() {
-        this._loadSerial++;
+        this._serial++;
         this._client?.destroy();
         this._client = null;
         if (this._settingsChangedId) {

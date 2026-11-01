@@ -22,6 +22,17 @@ class TTLCache:
             self._data[key] = (time.monotonic(), value)
         return value
 
+    def get(self, key: str) -> Any | None:
+        with self._lock:
+            hit = self._data.get(key)
+            if hit and time.monotonic() - hit[0] < self.ttl:
+                return hit[1]
+        return None
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._data[key] = (time.monotonic(), value)
+
     def invalidate(self, key: str | None = None) -> None:
         with self._lock:
             if key is None:

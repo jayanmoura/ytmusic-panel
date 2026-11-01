@@ -3,7 +3,7 @@
 Every method returns a JSON string:
     {"ok": true, "data": ...}
     {"ok": false, "error": "<code>", "message": "<human readable>"}
-Error codes: auth_required, network, bad_request, internal.
+Error codes: auth_required, network, unavailable, internal.
 """
 
 import json
@@ -19,7 +19,7 @@ gi.require_version("GLib", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
 from . import BUS_NAME, INTERFACE, OBJECT_PATH  # noqa: E402
-from .client import AuthError, Client, ServiceError  # noqa: E402
+from .client import AuthError, Client, ServiceError, UnavailableError  # noqa: E402
 
 log = logging.getLogger("ytmusic-daemon")
 
@@ -33,6 +33,14 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="json" direction="out"/>
     </method>
     <method name="RefreshPlaylists">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="GetPlaylistTracks">
+      <arg type="s" name="playlist_id" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="RefreshPlaylistTracks">
+      <arg type="s" name="playlist_id" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
     <signal name="AuthRequired"/>
@@ -58,7 +66,8 @@ class Service:
         self.connection: Gio.DBusConnection | None = None
         self._reg_id = 0
         # Network calls run off the main loop so D-Bus stays responsive.
-        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytm")
+        # Some calls block waiting on background fetches, so keep a few spare workers.
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytm")
         node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION_XML)
         self._iface = node.interfaces[0]
 
@@ -69,6 +78,9 @@ class Service:
         self._async_methods = {
             "GetPlaylists": lambda: ok(self.client.get_playlists()),
             "RefreshPlaylists": lambda: ok(self.client.get_playlists(force=True)),
+            "GetPlaylistTracks": lambda pid: ok(self.client.get_playlist_tracks(pid)),
+            "RefreshPlaylistTracks": lambda pid: ok(
+                self.client.get_playlist_tracks(pid, force=True)),
         }
 
     # -- bus plumbing -----------------------------------------------------------
@@ -104,6 +116,8 @@ class Service:
         except AuthError:
             result = err("auth_required", AUTH_MESSAGE)
             GLib.idle_add(self._emit_auth_required)
+        except UnavailableError:
+            result = err("unavailable", "Conteúdo indisponível no YouTube Music.")
         except ServiceError:
             result = err("network", "Não foi possível falar com o YouTube Music.")
         except Exception:
@@ -144,6 +158,7 @@ class Service:
         if self.connection and self._reg_id:
             self.connection.unregister_object(self._reg_id)
         self._pool.shutdown(wait=False, cancel_futures=True)
+        self.client.shutdown()
 
 
 def main():
