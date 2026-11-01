@@ -10,8 +10,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import requests
 from ytmusicapi import YTMusic
-from ytmusicapi.models.content.enums import LikeStatus
 from ytmusicapi.exceptions import YTMusicError, YTMusicServerError, YTMusicUserError
+from ytmusicapi.models.content.enums import LikeStatus
 
 from .cache import TTLCache
 from .paths import AUTH_FILE
@@ -77,7 +77,7 @@ class Client:
                 self._yt = self._yt_search = None
                 self._auth_mtime = None
                 self.auth_state = "missing"
-                raise AuthError("auth file not found")
+                raise AuthError("auth file not found") from None
 
             if self._yt is None or mtime != self._auth_mtime:
                 session = requests.Session()

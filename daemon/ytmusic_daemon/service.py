@@ -21,10 +21,9 @@ gi.require_version("Gio", "2.0")
 gi.require_version("GLib", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
-from . import BUS_NAME, INTERFACE, OBJECT_PATH  # noqa: E402
-from .client import AuthError, Client, DuplicateError, ServiceError, UnavailableError  # noqa: E402
-from . import browser_login  # noqa: E402
+from . import BUS_NAME, INTERFACE, OBJECT_PATH, browser_login  # noqa: E402
 from .browser_login import BrowserLoginError  # noqa: E402
+from .client import AuthError, Client, DuplicateError, ServiceError, UnavailableError  # noqa: E402
 from .covers import CoverCache  # noqa: E402
 from .player import Player, PlayerError  # noqa: E402
 from .resolver import Resolver  # noqa: E402

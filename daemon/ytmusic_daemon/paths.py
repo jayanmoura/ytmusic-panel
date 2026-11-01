@@ -8,5 +8,6 @@ def _xdg(var: str, default: str) -> Path:
 
 CONFIG_DIR = _xdg("XDG_CONFIG_HOME", ".config") / "ytmusic-daemon"
 AUTH_FILE = CONFIG_DIR / "browser.json"
-RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "ytmusic-daemon"
+_RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+RUNTIME_DIR = Path(_RUNTIME) / "ytmusic-daemon"
 CACHE_DIR = _xdg("XDG_CACHE_HOME", ".cache") / "ytmusic-daemon"

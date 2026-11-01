@@ -6,7 +6,12 @@ from ytmusicapi.models.content.enums import LikeStatus
 
 from ytmusic_daemon import client as client_mod
 from ytmusic_daemon.client import (
-    AuthError, Client, DuplicateError, UnavailableError, _shape_playlist, _shape_track,
+    AuthError,
+    Client,
+    DuplicateError,
+    UnavailableError,
+    _shape_playlist,
+    _shape_track,
 )
 
 
@@ -50,7 +55,9 @@ def test_shape_track_without_video_id_is_unavailable():
     assert _shape_track({"title": "x"})["available"] is False
 
 
-@pytest.mark.parametrize("count, expected", [("1.692", 1692), ("1,692", 1692), (28, 28), (None, None), ("?", None)])
+@pytest.mark.parametrize("count, expected", [
+    ("1.692", 1692), ("1,692", 1692), (28, 28), (None, None), ("?", None),
+])
 def test_shape_playlist_count(count, expected):
     p = _shape_playlist({"playlistId": "PLx", "title": "T", "count": count, "owned": 1})
     assert p["count"] == expected
@@ -68,7 +75,8 @@ def test_stale_playlist_returned_and_refreshed_in_background(client, monkeypatch
     data = {"id": "PLx", "title": "", "count": 1, "complete": True, "tracks": []}
     client._tracks_cache.set("PLx", data)
     now = client_mod.time.monotonic()
-    monkeypatch.setattr("ytmusic_daemon.cache.time.monotonic", lambda: now + client_mod.TRACKS_TTL + 1)
+    later = now + client_mod.TRACKS_TTL + 1
+    monkeypatch.setattr("ytmusic_daemon.cache.time.monotonic", lambda: later)
     refreshed = []
     monkeypatch.setattr(client, "_fetch_full_in_background", refreshed.append)
     assert client.get_playlist_tracks("PLx") is data

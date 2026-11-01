@@ -126,4 +126,4 @@ def validate(method: str, args: tuple) -> tuple:
         raise InvalidRequest("Método desconhecido.")
     if len(args) != len(validators):
         raise InvalidRequest("Número de argumentos inválido.")
-    return tuple(check(arg) for check, arg in zip(validators, args))
+    return tuple(check(arg) for check, arg in zip(validators, args, strict=True))
