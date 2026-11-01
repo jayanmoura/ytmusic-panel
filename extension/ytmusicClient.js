@@ -15,6 +15,13 @@ const IFACE_XML = `
     <method name="RefreshPlaylistTracks">
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
+    <method name="PlayPlaylist">
+      <arg type="s" direction="in"/><arg type="i" direction="in"/>
+      <arg type="s" direction="out"/>
+    </method>
+    <method name="PlayTrack">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
     <signal name="AuthRequired"/>
   </interface>
 </node>`;
@@ -26,7 +33,7 @@ const CALL_TIMEOUT_MS = 60000;
 
 export class YTMusicError extends Error {
     /**
-     * @param {string} code auth_required | network | unavailable | internal | offline | cancelled
+     * @param {string} code auth_required | network | unavailable | bad_request | player | internal | offline | cancelled
      * @param {string} message
      */
     constructor(code, message) {

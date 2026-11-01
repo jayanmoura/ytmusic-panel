@@ -146,6 +146,21 @@ class YTMusicIndicator extends PanelMenu.Button {
         header.add_child(this._refreshButton);
         box.add_child(header);
 
+        // Tracks view toolbar.
+        this._toolbar = new St.BoxLayout({style_class: 'ytmusic-toolbar', visible: false});
+        const playAllBox = new St.BoxLayout({style_class: 'ytmusic-pill-content'});
+        playAllBox.add_child(new St.Icon({icon_name: 'media-playback-start-symbolic', icon_size: 14}));
+        playAllBox.add_child(new St.Label({text: 'Tocar tudo', y_align: Clutter.ActorAlign.CENTER}));
+        this._playAllButton = new St.Button({
+            style_class: 'ytmusic-pill-button',
+            child: playAllBox,
+            can_focus: true,
+            accessible_name: 'Tocar tudo',
+        });
+        this._playAllButton.connect('clicked', () => this._playFrom(0));
+        this._toolbar.add_child(this._playAllButton);
+        box.add_child(this._toolbar);
+
         // Scrollable body shared by all views.
         this._scroll = new St.ScrollView({
             style_class: 'ytmusic-scroll',
@@ -172,6 +187,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._subtitle.text = subtitle ?? '';
         this._subtitle.visible = !!subtitle;
         this._backButton.visible = canGoBack;
+        this._toolbar.visible = canGoBack;
     }
 
     _clearList() {
@@ -324,6 +340,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._playlist = playlist;
         this._tracks = [];
         this._setHeader(playlist.title, null, true);
+        this._updatePlayAll();
         this._showLoading('Carregando músicas…');
         this._loadTracks(false);
     }
@@ -336,6 +353,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             (data, serial) => {
                 this._tracks = data.tracks;
                 this._updateTracksSubtitle(data);
+                this._updatePlayAll();
                 this._renderTracks();
                 if (!data.complete)
                     this._loadRemainingTracks(playlist, serial);
@@ -380,7 +398,7 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         const end = Math.min(this._renderedTracks + TRACKS_PAGE_SIZE, this._tracks.length);
         for (let i = this._renderedTracks; i < end; i++)
-            this._list.add_child(this._createTrackRow(this._tracks[i]));
+            this._list.add_child(this._createTrackRow(this._tracks[i], i));
         this._renderedTracks = end;
         this._updateMoreButton();
     }
@@ -407,13 +425,28 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._list.add_child(this._moreButton);
     }
 
-    _createTrackRow(track) {
-        const row = new St.BoxLayout({x_expand: true});
+    _createTrackRow(track, index) {
+        const row = new St.BoxLayout({
+            style_class: 'ytmusic-row ytmusic-track-row',
+            x_expand: true,
+            reactive: true,
+            track_hover: true,
+        });
+        if (!track.available)
+            row.add_style_class_name('ytmusic-row-unavailable');
+
+        const playButton = this._iconButton('media-playback-start-symbolic', 'Tocar',
+            () => this._playFrom(index));
+        playButton.add_style_class_name('ytmusic-row-play');
+        playButton.reactive = track.available;
+        playButton.can_focus = track.available;
+        row.add_child(playButton);
 
         const text = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: track.artists ? `${track.title}, ${track.artists}` : track.title,
         });
         text.add_child(ellipsized(new St.Label({
             text: track.title,
@@ -434,18 +467,32 @@ class YTMusicIndicator extends PanelMenu.Button {
                 y_align: Clutter.ActorAlign.CENTER,
             }));
         }
+        return row;
+    }
 
-        const button = new St.Button({
-            style_class: 'ytmusic-row ytmusic-track-row',
-            child: row,
-            can_focus: track.available,
-            reactive: track.available,
-            x_expand: true,
-            accessible_name: track.artists ? `${track.title}, ${track.artists}` : track.title,
-        });
-        if (!track.available)
-            button.add_style_class_name('ytmusic-row-unavailable');
-        return button;
+    // -- playback --------------------------------------------------------------
+
+    _updatePlayAll() {
+        const playable = this._tracks.some(t => t.available);
+        this._playAllButton.reactive = playable;
+        this._playAllButton.can_focus = playable;
+    }
+
+    _playFrom(index) {
+        if (!this._playlist)
+            return;
+        this._play('PlayPlaylist', this._playlist.id, index);
+    }
+
+    async _play(method, ...args) {
+        try {
+            await this._client.call(method, ...args);
+        } catch (e) {
+            if (e.code === 'cancelled')
+                return;
+            const [title, hint] = ERROR_TEXT[e.code] ?? [e.message, null];
+            Main.notify('YouTube Music', hint ? `${title} ${hint}` : title);
+        }
     }
 
     destroy() {

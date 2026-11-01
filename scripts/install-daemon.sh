@@ -12,6 +12,8 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q --upgrade -e "$ROOT/daemon"
+# YouTube changes often; always pull the newest yt-dlp (and its JS solver).
+"$VENV/bin/pip" install -q --upgrade "yt-dlp[default]" deno
 
 mkdir -p "$UNIT_DIR" "$DBUS_DIR"
 install -m 644 "$ROOT/daemon/data/ytmusic-daemon.service" "$UNIT_DIR/"

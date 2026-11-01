@@ -103,3 +103,44 @@
 .ytmusic-more-button:focus {
   background-color: rgba(255, 255, 255, 0.16);
 }
+
+.ytmusic-toolbar {
+  padding: 0 12px 8px 12px;
+}
+
+.ytmusic-pill-button {
+  padding: 6px 14px;
+  border-radius: 99px;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.ytmusic-pill-button:hover,
+.ytmusic-pill-button:focus {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.ytmusic-pill-button:insensitive {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.ytmusic-pill-content {
+  spacing: 6px;
+}
+
+.ytmusic-track-row {
+  padding: 4px 12px 4px 4px;
+  spacing: 6px;
+}
+
+.ytmusic-track-row:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.ytmusic-row-play {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.ytmusic-row-play:hover,
+.ytmusic-row-play:focus {
+  color: #fff;
+}

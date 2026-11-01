@@ -45,6 +45,8 @@ class Client:
         self._tracks_cache = TTLCache(TRACKS_TTL)
         self._full_fetches: dict[str, Future] = {}
         self._bg = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ytm-bg")
+        # videoId -> shaped track, so PlayTrack can show metadata for known songs.
+        self._known_tracks: dict[str, dict] = {}
 
     # -- auth -----------------------------------------------------------------
 
@@ -164,6 +166,7 @@ class Client:
     def _fetch_playlist(self, playlist_id: str, limit: int | None) -> dict:
         raw = self._call(lambda yt: yt.get_playlist(playlist_id, limit=limit))
         tracks = [_shape_track(t) for t in raw.get("tracks") or []]
+        self._remember(tracks)
         total = raw.get("trackCount")
         complete = (
             limit is None
@@ -176,6 +179,21 @@ class Client:
             "count": total,
             "complete": complete,
             "tracks": tracks,
+        }
+
+    def _remember(self, tracks: list[dict]) -> None:
+        with self._lock:
+            for t in tracks:
+                if t["videoId"]:
+                    self._known_tracks[t["videoId"]] = t
+
+    def track_info(self, video_id: str) -> dict:
+        with self._lock:
+            known = self._known_tracks.get(video_id)
+        return known or {
+            "videoId": video_id, "title": None, "artists": "", "album": None,
+            "duration": None, "duration_seconds": None, "available": True,
+            "explicit": False, "thumbnail": None,
         }
 
     def shutdown(self) -> None:
