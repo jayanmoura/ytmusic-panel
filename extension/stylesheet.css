@@ -2,9 +2,22 @@
   width: 400px;
 }
 
+.ytmusic-search-row {
+  margin: 4px 8px 8px 12px;
+  spacing: 4px;
+}
+
 .ytmusic-header {
   padding: 4px 12px 8px 12px;
+}
+
+.ytmusic-title-row {
   spacing: 8px;
+}
+
+/* Back button (28px) plus the title row spacing. */
+.ytmusic-subtitle-indented {
+  margin-left: 36px;
 }
 
 .ytmusic-title {
@@ -178,7 +191,6 @@
 }
 
 .ytmusic-search {
-  margin: 4px 12px 8px 12px;
   border-radius: 99px;
   padding: 6px 12px;
 }

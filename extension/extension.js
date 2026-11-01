@@ -162,30 +162,42 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._searchEntry.clutter_text.connect('text-changed', () => this._onSearchChanged());
         this._searchEntry.connect('secondary-icon-clicked', () => this._searchEntry.set_text(''));
         this._searchEntry.clutter_text.connect('activate', () => this._runSearchNow());
-        box.add_child(this._searchEntry);
 
-        // Header: [back] title/subtitle [refresh]
-        const header = new St.BoxLayout({style_class: 'ytmusic-header'});
+        // Search row: [search field] [settings]
+        const searchRow = new St.BoxLayout({style_class: 'ytmusic-search-row'});
+        searchRow.add_child(this._searchEntry);
+        searchRow.add_child(this._iconButton('emblem-system-symbolic', 'Configurações',
+            () => this._openSettings()));
+        box.add_child(searchRow);
+
+        // Header: [back] title [refresh], subtitle on its own line below the
+        // title, so the back arrow stays aligned with the title text.
+        const header = new St.BoxLayout({
+            style_class: 'ytmusic-header',
+            orientation: Clutter.Orientation.VERTICAL,
+        });
+        const titleRow = new St.BoxLayout({style_class: 'ytmusic-title-row'});
+        header.add_child(titleRow);
 
         this._backButton = this._iconButton('go-previous-symbolic', 'Voltar',
             () => this._goBack());
         this._backButton.visible = false;
-        header.add_child(this._backButton);
+        titleRow.add_child(this._backButton);
 
-        const titles = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
+        this._title = ellipsized(new St.Label({
+            text: 'Playlists',
+            style_class: 'ytmusic-title',
             x_expand: true,
             y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._title = ellipsized(new St.Label({text: 'Playlists', style_class: 'ytmusic-title'}));
-        this._subtitle = new St.Label({style_class: 'ytmusic-subtitle', visible: false});
-        titles.add_child(this._title);
-        titles.add_child(this._subtitle);
-        header.add_child(titles);
+        }));
+        titleRow.add_child(this._title);
 
         this._refreshButton = this._iconButton('view-refresh-symbolic', 'Atualizar',
             () => this._refresh());
-        header.add_child(this._refreshButton);
+        titleRow.add_child(this._refreshButton);
+
+        this._subtitle = ellipsized(new St.Label({style_class: 'ytmusic-subtitle', visible: false}));
+        header.add_child(this._subtitle);
         box.add_child(header);
 
         // Tracks view toolbar.
@@ -252,7 +264,17 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._subtitle.text = subtitle ?? '';
         this._subtitle.visible = !!subtitle;
         this._backButton.visible = canGoBack;
+        // Indent the subtitle under the title, past the back arrow.
+        if (canGoBack)
+            this._subtitle.add_style_class_name('ytmusic-subtitle-indented');
+        else
+            this._subtitle.remove_style_class_name('ytmusic-subtitle-indented');
         this._toolbar.visible = showToolbar;
+    }
+
+    _openSettings() {
+        this.menu.close();
+        this._extension.openPreferences();
     }
 
     _goBack() {
