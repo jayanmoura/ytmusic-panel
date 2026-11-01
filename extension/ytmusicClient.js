@@ -20,7 +20,7 @@ const IFACE_XML = `
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
     <method name="PlayPlaylist">
-      <arg type="s" direction="in"/><arg type="i" direction="in"/>
+      <arg type="s" direction="in"/><arg type="i" direction="in"/><arg type="b" direction="in"/>
       <arg type="s" direction="out"/>
     </method>
     <method name="PlayTrack">

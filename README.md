@@ -77,6 +77,7 @@ Clique no ícone no painel.
 
 - **Busca**: o campo no topo já recebe o foco; os resultados aparecem quando você para de digitar (ou com Enter). Dentro de uma playlist, o campo fica abaixo do nome dela e filtra só as músicas da playlist (título, artista ou álbum, sem diferenciar acentos).
 - **Playlists**: "Músicas que gostei" fica sempre no topo. Clique numa playlist para ver as músicas.
+- **Ordem da playlist**: ela abre com as músicas adicionadas mais recentemente no topo. O botão ao lado de atualizar inverte para as mais antigas primeiro (fica destacado enquanto ativo); ao abrir a playlist de novo, volta para as mais recentes. Tocar a partir de uma música segue a ordem que está na tela.
 - **Tocar**: o ▶ de uma música toca a partir dela e segue a playlist. Num resultado de busca, toca só aquela música.
 - **Menu de uma música** (⋮, dentro de uma playlist; abre um menu flutuante, que fecha ao clicar fora): adicionar à fila, tocar a seguir, adicionar a outra playlist, compartilhar (copia o link `music.youtube.com` e mostra "Link copiado") e remover da playlist (só nas suas playlists; pede um segundo clique para confirmar). Remover de "Músicas que gostei" equivale a descurtir.
 - **Adicionar a uma playlist**: nos resultados da busca, o botão **+** abre a lista das suas playlists. Adicionar a "Músicas que gostei" equivale a curtir a música.

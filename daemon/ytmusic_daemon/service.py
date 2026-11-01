@@ -57,6 +57,7 @@ INTROSPECTION_XML = f"""
     <method name="PlayPlaylist">
       <arg type="s" name="playlist_id" direction="in"/>
       <arg type="i" name="start_index" direction="in"/>
+      <arg type="b" name="oldest_first" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
     <method name="PlayTrack">
@@ -182,7 +183,8 @@ class Service:
                 self.client.get_playlist_tracks(pid, force=True)),
             "Search": lambda q: ok(self._search(q)),
             "GetAccount": lambda: ok(self._get_account()),
-            "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
+            "PlayPlaylist": lambda pid, start, oldest_first: ok(
+                self._play_playlist(pid, start, oldest_first)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
             "AddToPlaylist": lambda pid, vid: ok(self._add_to_playlist(pid, vid)),
             "RemoveFromPlaylist": lambda pid, vid: ok(self._remove_from_playlist(pid, vid)),
@@ -321,13 +323,19 @@ class Service:
         if upcoming:
             self.resolver.prefetch(upcoming["videoId"])
 
-    def _play_playlist(self, playlist_id: str, start_index: int) -> dict:
+    def _play_playlist(self, playlist_id: str, start_index: int,
+                       oldest_first: bool = False) -> dict:
+        """start_index is in the playlist's own order (newest first); with
+        oldest_first the queue runs from the oldest track to the newest."""
         data = self.client.get_playlist_tracks(playlist_id)
-        if not data["complete"] and start_index >= len(data["tracks"]):
+        if not data["complete"] and (oldest_first or start_index >= len(data["tracks"])):
             data = self.client.get_playlist_tracks(playlist_id)  # waits for the full list
         tracks = data["tracks"]
         if not 0 <= start_index < len(tracks):
             raise BadRequest("Música fora da playlist.")
+        if oldest_first:
+            tracks = tracks[::-1]
+            start_index = len(tracks) - 1 - start_index
 
         playable = [t for t in tracks if t["available"]]
         # Start at the chosen track, or the next playable one after it.

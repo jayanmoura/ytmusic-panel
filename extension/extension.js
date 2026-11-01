@@ -116,7 +116,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._viewBeforeSearch = 'playlists';
         this._pendingCovers = []; // [url, St.Bin] waiting for _flushCovers()
         this._trackFilter = '';
-        this._shownTracks = []; // indices into _tracks that pass the filter
+        this._oldestFirst = false;
+        this._tracksComplete = false;
+        this._shownTracks = []; // indices into _tracks that pass the filter, in display order
         this._filterTimeoutId = 0;
         this._prepareTimeoutId = 0;
         this._toastTimeoutId = 0;
@@ -273,6 +275,12 @@ class YTMusicIndicator extends PanelMenu.Button {
             y_align: Clutter.ActorAlign.CENTER,
         }));
         titleRow.add_child(this._title);
+
+        // Tracks view only: newest first (the playlist's order) or oldest first.
+        this._sortButton = this._iconButton('view-sort-descending-symbolic', '',
+            () => this._toggleOldestFirst());
+        this._sortButton.visible = false;
+        titleRow.add_child(this._sortButton);
 
         this._refreshButton = this._iconButton('view-refresh-symbolic', 'Atualizar',
             () => this._refresh());
@@ -524,6 +532,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._trackFilter = '';
         this._setSearchText('');
         this._setSearchMode(false);
+        this._sortButton.visible = false;
         this._setHeader('Playlists');
         if (this._playlists)
             this._renderPlaylists();
@@ -600,6 +609,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._trackFilter = '';
         this._setSearchText('');
         this._setSearchMode(true);
+        this._oldestFirst = false;
+        this._tracksComplete = false;
+        this._updateSortButton();
+        this._sortButton.visible = true;
         this._setHeader(playlist.title, null, true);
         this._showLoading('Carregando músicas…');
         this._loadTracks(false);
@@ -612,6 +625,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             () => this._client.call(method, playlist.id),
             (data, serial) => {
                 this._tracks = data.tracks;
+                this._tracksComplete = data.complete;
+                this._updateSortButton();
                 this._updateTracksSubtitle(data);
                 this._renderTracks();
                 if (!data.complete)
@@ -626,6 +641,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             if (serial !== this._serial)
                 return;
             this._tracks = data.tracks;
+            this._tracksComplete = data.complete;
+            this._updateSortButton();
             this._updateTracksSubtitle(data);
             if (this._trackFilter)
                 this._renderTracks(); // more matches may have arrived
@@ -652,6 +669,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             if (!filter || normalize(`${t.title} ${t.artists} ${t.album ?? ''}`).includes(filter))
                 this._shownTracks.push(i);
         });
+        if (this._oldestFirst)
+            this._shownTracks.reverse();
     }
 
     _renderTracks() {
@@ -684,6 +703,26 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     // Re-render after a change to _tracks without jumping back to the top.
+    _toggleOldestFirst() {
+        if (!this._tracksComplete)
+            return;
+        this._oldestFirst = !this._oldestFirst;
+        this._updateSortButton();
+        this._renderTracks();
+    }
+
+    // Reversing only makes sense with the whole list, so it waits for it.
+    _updateSortButton() {
+        const button = this._sortButton;
+        button.child.icon_name = this._oldestFirst
+            ? 'view-sort-ascending-symbolic' : 'view-sort-descending-symbolic';
+        button.accessible_name = this._oldestFirst
+            ? 'Mostrando as mais antigas primeiro' : 'Mostrando as mais recentes primeiro';
+        this._setToggled(button, this._oldestFirst);
+        button.reactive = this._tracksComplete;
+        button.can_focus = this._tracksComplete;
+    }
+
     _rerenderTracksKeepingScroll() {
         const scroll = this._scroll.vadjustment.value;
         const rendered = this._renderedTracks;
@@ -930,6 +969,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._pickerTrack = track;
         this._setHeader(title, subtitle, true);
         this._refreshButton.visible = false;
+        this._sortButton.visible = false;
         this._searchRow.visible = false;
         this._scroll.visible = false;
         this._pickerScroll.visible = true;
@@ -966,6 +1006,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._pickerScroll.visible = false;
         this._scroll.visible = true;
         this._refreshButton.visible = true;
+        this._sortButton.visible = this._view === 'tracks';
         this._searchRow.visible = true;
         const h = this._savedHeader;
         this._setHeader(h.title, h.subtitle, h.back);
@@ -1381,7 +1422,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     _playFrom(index) {
         if (!this._playlist)
             return;
-        this._play('PlayPlaylist', this._playlist.id, index);
+        this._play('PlayPlaylist', this._playlist.id, index, this._oldestFirst);
     }
 
     async _play(method, ...args) {
