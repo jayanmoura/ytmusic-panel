@@ -55,6 +55,10 @@ const IFACE_XML = `
     <method name="TogglePause"><arg type="s" direction="out"/></method>
     <method name="Next"><arg type="s" direction="out"/></method>
     <method name="Previous"><arg type="s" direction="out"/></method>
+    <method name="GetPosition"><arg type="s" direction="out"/></method>
+    <method name="Seek">
+      <arg type="d" direction="in"/><arg type="s" direction="out"/>
+    </method>
     <method name="ToggleShuffle"><arg type="s" direction="out"/></method>
     <method name="CycleRepeat"><arg type="s" direction="out"/></method>
     <signal name="PlaybackChanged"><arg type="s"/></signal>

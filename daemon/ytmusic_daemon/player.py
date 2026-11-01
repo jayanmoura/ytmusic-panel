@@ -438,6 +438,23 @@ class Player:
             else:
                 self._send_quiet(["playlist-prev", "weak"])
 
+    def position(self) -> dict:
+        """Current position; polled by the expanded player (time-pos isn't
+        observed, it would flood the PlaybackChanged signal)."""
+        with self._lock:
+            if not self._running():
+                return {"position": 0, "duration": None}
+            try:
+                pos = self._send(["get_property", "time-pos"])
+            except PlayerError:
+                pos = None  # nothing loaded yet
+            return {"position": pos or 0, "duration": self._props.get("duration")}
+
+    def seek(self, seconds: float) -> None:
+        with self._lock:
+            if self._running():
+                self._send_quiet(["seek", max(0.0, float(seconds)), "absolute"])
+
     def _send_quiet(self, command: list) -> None:
         """For commands mpv rejects at the ends of the playlist."""
         try:

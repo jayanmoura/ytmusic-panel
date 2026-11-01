@@ -112,6 +112,13 @@ INTROSPECTION_XML = f"""
     <method name="Previous">
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="GetPosition">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="Seek">
+      <arg type="d" name="seconds" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <method name="ToggleShuffle">
       <arg type="s" name="json" direction="out"/>
     </method>
@@ -197,6 +204,8 @@ class Service:
             "Next": lambda: self._control(self.player.next),
             "Previous": lambda: self._control(self.player.previous),
             "ToggleShuffle": lambda: self._control(self.player.toggle_shuffle),
+            "GetPosition": lambda: ok(self.player.position()),
+            "Seek": lambda seconds: (self.player.seek(seconds), ok(self.player.position()))[1],
             "CycleRepeat": lambda: self._control(self.player.cycle_repeat),
         }
 

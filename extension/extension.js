@@ -63,6 +63,26 @@ function trackCountText(count) {
     return `${numberFormat.format(count)} músicas`;
 }
 
+const PROGRESS_TICK_MS = 250;
+// The position is interpolated locally and re-read from the service this often.
+const PROGRESS_SYNC_MS = 5000;
+const NOW_PLAYING = {videoId: null}; // overlay marker for the expanded player
+
+// Thumbnails come at 120px; ask the image server for a size fit for the big cover.
+function largeCover(url) {
+    return url?.replace(/=w\d+-h\d+/, '=w544-h544').replace(/=s\d+(?=-|$)/, '=s544') ?? null;
+}
+
+function formatTime(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0)
+        return '0:00';
+    const s = Math.floor(seconds);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const ss = String(s % 60).padStart(2, '0');
+    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+}
+
 // Case and accent insensitive, for the playlist filter.
 function normalize(text) {
     return (text ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
@@ -124,6 +144,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._toastTimeoutId = 0;
         this._settingSearchText = false;
         this._floatTrack = null;
+        this._overlayActor = null; // what the overlay shows: picker list or expanded player
+        this._progressTimeoutId = 0;
+        this._progressBase = {position: 0, at: 0, duration: null};
+        this._lastSync = 0;
         // Bumped on every navigation/load; stale async replies are dropped.
         this._serial = 0;
 
@@ -137,6 +161,7 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         this.menu.connect('open-state-changed', (_menu, open) => {
             if (!open) {
+                this._stopProgress();
                 this._closeFloat();
                 this._updateMarquee(); // stops it
                 return;
@@ -144,6 +169,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._refreshPlayer();
             this._fitHeight();
             this._updateMarquee();
+            if (this._overlayActor === this._nowPlaying)
+                this._startProgress();
             if (this._view === 'playlists')
                 this._loadPlaylists(false);
         });
@@ -321,6 +348,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         this._pickerScroll.set_child(this._pickerList);
         box.add_child(this._pickerScroll);
+        this._buildNowPlaying(box);
         this._pickerTrack = null;
         this._savedHeader = null;
 
@@ -349,7 +377,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _setListHeight(min, max) {
-        for (const scroll of [this._scroll, this._pickerScroll])
+        for (const scroll of [this._scroll, this._pickerScroll, this._nowPlaying])
             scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
     }
 
@@ -360,7 +388,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         const workArea = Main.layoutManager.getWorkAreaForMonitor(
             monitor >= 0 ? monitor : Main.layoutManager.primaryIndex);
         // Height of everything in the popup except the visible list.
-        const scroll = this._pickerTrack ? this._pickerScroll : this._scroll;
+        const scroll = this._overlayActor ?? this._scroll;
         const [, listNat] = scroll.get_preferred_height(-1);
         const [, menuNat] = this.menu.box.get_preferred_height(-1);
         const chrome = menuNat - listNat;
@@ -958,7 +986,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     // Covers the current view with the picker/actions list.
-    _enterOverlay(track, title, subtitle) {
+    _enterOverlay(track, title, subtitle, actor = this._pickerScroll) {
         if (!this._pickerTrack) {
             this._savedHeader = {
                 title: this._title.text,
@@ -972,8 +1000,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._sortButton.visible = false;
         this._searchRow.visible = false;
         this._scroll.visible = false;
-        this._pickerScroll.visible = true;
-        this._pickerScroll.vadjustment.value = 0;
+        if (this._overlayActor && this._overlayActor !== actor)
+            this._overlayActor.visible = false;
+        this._overlayActor = actor;
+        actor.visible = true;
+        if (actor === this._pickerScroll)
+            this._pickerScroll.vadjustment.value = 0;
     }
 
     // -- add to playlist --------------------------------------------------------
@@ -1004,6 +1036,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._pickerTrack = null;
         this._pickerList.destroy_all_children();
         this._pickerScroll.visible = false;
+        this._nowPlaying.visible = false;
+        this._overlayActor = null;
+        this._stopProgress();
         this._scroll.visible = true;
         this._refreshButton.visible = true;
         this._sortButton.visible = this._view === 'tracks';
@@ -1265,9 +1300,21 @@ class YTMusicIndicator extends PanelMenu.Button {
         const player = new St.BoxLayout({style_class: 'ytmusic-player', x_expand: true});
         section.actor.add_child(player);
 
+        // Cover and title open the expanded player.
+        const openBox = new St.BoxLayout({style_class: 'ytmusic-player-open-content', x_expand: true});
+        this._playerOpenButton = new St.Button({
+            style_class: 'ytmusic-player-open',
+            child: openBox,
+            x_expand: true,
+            can_focus: true,
+            accessible_name: 'Abrir o player',
+        });
+        this._playerOpenButton.connect('clicked', () => this._toggleNowPlaying());
+        player.add_child(this._playerOpenButton);
+
         this._playerCoverSlot = new St.Bin({y_align: Clutter.ActorAlign.CENTER});
         this._playerCoverUrl = undefined;
-        player.add_child(this._playerCoverSlot);
+        openBox.add_child(this._playerCoverSlot);
 
         const info = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -1281,7 +1328,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._playerArtist = ellipsized(new St.Label({style_class: 'ytmusic-player-artist'}));
         info.add_child(this._titleClip);
         info.add_child(this._playerArtist);
-        player.add_child(info);
+        openBox.add_child(info);
 
         const controls = new St.BoxLayout({style_class: 'ytmusic-player-controls'});
         this._repeatButton = this._iconButton('media-playlist-repeat-symbolic', 'Repetir',
@@ -1373,6 +1420,205 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         this._highlightPlayingRow(active ? track?.videoId : null);
         this._updatePlayerCover(active ? track?.thumbnail ?? null : null, active);
+        this._playerOpenButton.reactive = active;
+        this._playerOpenButton.can_focus = active;
+
+        if (this._overlayActor === this._nowPlaying) {
+            if (!active) {
+                this._closePicker();
+            } else {
+                this._renderNowPlaying();
+                // Track or play/pause changed: re-read the position.
+                const key = `${track?.videoId}|${state.state}`;
+                if (key !== this._nowPlayingKey) {
+                    this._nowPlayingKey = key;
+                    this._syncPosition();
+                }
+            }
+        }
+    }
+
+    // -- expanded player ----------------------------------------------------------
+
+    _buildNowPlaying(parent) {
+        this._nowPlaying = new St.BoxLayout({
+            style_class: 'ytmusic-np',
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            visible: false,
+        });
+        const inner = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._nowPlaying.add_child(inner);
+
+        this._npCoverSlot = new St.Bin({x_align: Clutter.ActorAlign.CENTER});
+        this._npCoverUrl = undefined;
+        inner.add_child(this._npCoverSlot);
+
+        this._npTitle = new St.Label({style_class: 'ytmusic-np-title', x_align: Clutter.ActorAlign.CENTER});
+        this._npTitle.clutter_text.line_wrap = true;
+        this._npTitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        this._npArtist = ellipsized(new St.Label({style_class: 'ytmusic-np-artist', x_align: Clutter.ActorAlign.CENTER}));
+        this._npAlbum = ellipsized(new St.Label({style_class: 'ytmusic-np-album', x_align: Clutter.ActorAlign.CENTER}));
+        inner.add_child(this._npTitle);
+        inner.add_child(this._npArtist);
+        inner.add_child(this._npAlbum);
+
+        // Progress: click anywhere on it to jump there. The reactive area is
+        // taller than the visible bar so it's easy to hit.
+        this._progress = new St.Widget({
+            style_class: 'ytmusic-progress',
+            layout_manager: new Clutter.BinLayout(),
+            reactive: true,
+            track_hover: true,
+            x_expand: true,
+        });
+        this._progressTrack = new St.Widget({
+            style_class: 'ytmusic-progress-track',
+            layout_manager: new Clutter.FixedLayout(),
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._progressFill = new St.Widget({style_class: 'ytmusic-progress-fill'});
+        this._progressKnob = new St.Widget({style_class: 'ytmusic-progress-knob'});
+        this._progressTrack.add_child(this._progressFill);
+        this._progressTrack.add_child(this._progressKnob);
+        this._progress.add_child(this._progressTrack);
+        this._progress.connect('button-press-event', (actor, event) => {
+            const [x, y] = event.get_coords();
+            const [ok, localX] = actor.transform_stage_point(x, y);
+            if (ok && actor.width > 0)
+                this._seekTo(localX / actor.width);
+            return Clutter.EVENT_STOP;
+        });
+        inner.add_child(this._progress);
+
+        const times = new St.BoxLayout({style_class: 'ytmusic-np-times', x_expand: true});
+        this._npElapsed = new St.Label({style_class: 'ytmusic-np-time', x_expand: true});
+        this._npTotal = new St.Label({style_class: 'ytmusic-np-time'});
+        times.add_child(this._npElapsed);
+        times.add_child(this._npTotal);
+        inner.add_child(times);
+
+        parent.add_child(this._nowPlaying);
+    }
+
+    _toggleNowPlaying() {
+        if (this._overlayActor === this._nowPlaying) {
+            this._closePicker();
+            return;
+        }
+        if (!this._playback || this._playback.state === 'stopped')
+            return;
+        this._closeFloat();
+        this._enterOverlay(NOW_PLAYING, 'Tocando agora', null, this._nowPlaying);
+        this._nowPlayingKey = null;
+        this._renderNowPlaying();
+        this._syncPosition();
+        this._startProgress();
+    }
+
+    _renderNowPlaying() {
+        const state = this._playback;
+        const track = state?.track;
+        this._npTitle.text = track?.title || 'Música sem título';
+        this._npArtist.text = state?.state === 'loading' ? 'Carregando…' : track?.artists || '';
+        this._npAlbum.text = track?.album ?? '';
+        this._npAlbum.visible = !!track?.album;
+
+        const url = largeCover(track?.thumbnail);
+        if (url !== this._npCoverUrl) {
+            this._npCoverUrl = url;
+            this._npCoverSlot.child?.destroy();
+            this._npCoverSlot.child = this._cover(url, 'ytmusic-cover ytmusic-np-cover') ??
+                new St.Bin({
+                    style_class: 'ytmusic-cover ytmusic-np-cover',
+                    child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
+                });
+            this._flushCovers();
+        }
+        if (state?.duration)
+            this._progressBase.duration = state.duration;
+        if (state?.state === 'loading')
+            this._progress.add_style_class_name('ytmusic-progress-loading');
+        else
+            this._progress.remove_style_class_name('ytmusic-progress-loading');
+        this._tickProgress();
+    }
+
+    async _syncPosition() {
+        this._lastSync = GLib.get_monotonic_time();
+        try {
+            const data = await this._client.call('GetPosition');
+            this._setPositionBase(data.position, data.duration);
+        } catch (e) {
+            // Keep interpolating; the next sync will correct it.
+        }
+    }
+
+    _setPositionBase(position, duration) {
+        this._progressBase = {
+            position: position ?? 0,
+            at: GLib.get_monotonic_time(),
+            duration: duration ?? this._progressBase.duration,
+        };
+        this._tickProgress();
+    }
+
+    _currentPosition() {
+        const {position, at, duration} = this._progressBase;
+        const playing = this._playback?.state === 'playing';
+        const now = position + (playing ? (GLib.get_monotonic_time() - at) / 1e6 : 0);
+        return duration ? Math.min(now, duration) : now;
+    }
+
+    _tickProgress() {
+        const duration = this._progressBase.duration;
+        const position = this._currentPosition();
+        const ratio = duration ? Math.max(0, Math.min(1, position / duration)) : 0;
+        const width = this._progressTrack.width;
+        const fill = Math.round(width * ratio);
+        this._progressFill.set_size(fill, this._progressTrack.height);
+        const knob = this._progressKnob;
+        knob.set_position(Math.round(fill - knob.width / 2),
+            Math.round((this._progressTrack.height - knob.height) / 2));
+        this._npElapsed.text = formatTime(position);
+        this._npTotal.text = duration ? formatTime(duration) : '--:--';
+    }
+
+    _startProgress() {
+        this._stopProgress();
+        this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_TICK_MS, () => {
+            this._tickProgress();
+            if (GLib.get_monotonic_time() - this._lastSync > PROGRESS_SYNC_MS * 1000)
+                this._syncPosition();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _stopProgress() {
+        if (this._progressTimeoutId) {
+            GLib.source_remove(this._progressTimeoutId);
+            this._progressTimeoutId = 0;
+        }
+    }
+
+    async _seekTo(ratio) {
+        const duration = this._progressBase.duration;
+        if (!duration || this._playback?.state === 'stopped')
+            return;
+        const seconds = Math.max(0, Math.min(1, ratio)) * duration;
+        this._setPositionBase(seconds, duration); // move the bar right away
+        try {
+            const data = await this._client.call('Seek', seconds);
+            this._setPositionBase(data.position, data.duration);
+        } catch (e) {
+            this._syncPosition();
+        }
     }
 
     _setToggled(button, on) {
@@ -1439,7 +1685,8 @@ class YTMusicIndicator extends PanelMenu.Button {
     destroy() {
         this._serial++;
         this._playerTitle.remove_transition('translation-x');
-        for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_prepareTimeoutId', '_toastTimeoutId']) {
+        for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_prepareTimeoutId', '_toastTimeoutId',
+            '_progressTimeoutId']) {
             if (this[id]) {
                 GLib.source_remove(this[id]);
                 this[id] = 0;

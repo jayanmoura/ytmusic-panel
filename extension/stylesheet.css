@@ -178,6 +178,77 @@
   spacing: 12px;
 }
 
+/* Mini player: cover + title open the expanded player. */
+.ytmusic-player-open {
+  border-radius: 10px;
+  padding: 2px 4px;
+}
+
+.ytmusic-player-open-content {
+  spacing: 8px;
+}
+
+/* Expanded player. */
+.ytmusic-np {
+  padding: 4px 24px 8px 24px;
+}
+
+.ytmusic-np-cover {
+  width: 220px;
+  height: 220px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+
+.ytmusic-np-cover .ytmusic-cover-placeholder {
+  icon-size: 64px;
+}
+
+.ytmusic-np-title {
+  font-weight: bold;
+  font-size: 1.2em;
+  text-align: center;
+}
+
+.ytmusic-np-artist {
+  margin-top: 2px;
+}
+
+.ytmusic-np-album {
+  font-size: 0.9em;
+  margin-top: 2px;
+}
+
+.ytmusic-progress {
+  margin-top: 16px;
+  padding: 8px 0;
+}
+
+.ytmusic-progress-track {
+  height: 4px;
+  border-radius: 99px;
+}
+
+.ytmusic-progress:hover .ytmusic-progress-track {
+  height: 6px;
+}
+
+.ytmusic-progress-fill {
+  border-radius: 99px;
+  background-color: -st-accent-color;
+}
+
+.ytmusic-progress-knob {
+  width: 12px;
+  height: 12px;
+  border-radius: 99px;
+  background-color: -st-accent-color;
+}
+
+.ytmusic-np-time {
+  font-size: 0.85em;
+}
+
 /* Repeat/shuffle switched on. */
 .ytmusic-icon-button.ytmusic-toggle-on {
   color: -st-accent-color;
@@ -279,6 +350,24 @@
   background-color: rgba(255, 255, 255, 0.1);
 }
 
+.ytmusic-theme-dark .ytmusic-player-open:hover,
+.ytmusic-theme-dark .ytmusic-player-open:focus {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.ytmusic-theme-dark .ytmusic-progress-track {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.ytmusic-theme-dark .ytmusic-progress-loading .ytmusic-progress-track {
+  background-color: rgba(255, 255, 255, 0.07);
+}
+
+.ytmusic-theme-dark .ytmusic-np-album,
+.ytmusic-theme-dark .ytmusic-np-time {
+  color: rgba(255, 255, 255, 0.6);
+}
+
 .ytmusic-theme-dark .ytmusic-toast {
   background-color: #ffffff;
   color: #222222;
@@ -378,6 +467,24 @@
 
 .ytmusic-theme-light .ytmusic-toggle-on {
   background-color: rgba(34, 34, 34, 0.08);
+}
+
+.ytmusic-theme-light .ytmusic-player-open:hover,
+.ytmusic-theme-light .ytmusic-player-open:focus {
+  background-color: rgba(34, 34, 34, 0.06);
+}
+
+.ytmusic-theme-light .ytmusic-progress-track {
+  background-color: rgba(34, 34, 34, 0.12);
+}
+
+.ytmusic-theme-light .ytmusic-progress-loading .ytmusic-progress-track {
+  background-color: rgba(34, 34, 34, 0.06);
+}
+
+.ytmusic-theme-light .ytmusic-np-album,
+.ytmusic-theme-light .ytmusic-np-time {
+  color: rgba(34, 34, 34, 0.6);
 }
 
 .ytmusic-theme-light .ytmusic-toast {
