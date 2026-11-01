@@ -30,7 +30,10 @@ MPRIS_PLUGIN_CANDIDATES = [
 SOCKET_PATH = RUNTIME_DIR / f"mpv-{os.getpid()}.sock"
 COMMAND_TIMEOUT = 5.0
 
-OBSERVED = ["pause", "playlist-pos", "idle-active", "core-idle", "duration", "path"]
+OBSERVED = ["pause", "playlist-pos", "idle-active", "core-idle", "duration", "path",
+            "media-title"]
+# "Previous" restarts the current track instead when past this point (seconds).
+RESTART_THRESHOLD = 3.0
 
 URL_PREFIX = "https://music.youtube.com/watch?v="
 
@@ -65,6 +68,8 @@ class Player:
         self._pending_before: tuple[int, list[dict]] | None = None
         # mpv's playlist-pos + offset = index in self.queue, until they're inserted.
         self._pos_offset = 0
+        # Queue index being started; mpv reports idle until the URL resolves.
+        self._starting: int | None = None
         self._list_serial = 0
 
     # -- process & socket ------------------------------------------------------
@@ -181,13 +186,17 @@ class Player:
         if event == "property-change":
             self._props[msg["name"]] = msg.get("data")
             self._notify()
-        elif event == "file-loaded" and self._pending_before:
+        elif event in ("file-loaded", "end-file", "idle"):
+            if event == "file-loaded" or msg.get("reason") == "error":
+                self._starting = None
+            self._notify()
+        if event == "file-loaded" and self._pending_before:
             gen, before = self._pending_before
             self._pending_before = None
             # Can't send commands from the reader thread (it delivers the replies).
             threading.Thread(target=self._insert_before, args=(gen, before),
                              name="mpv-insert", daemon=True).start()
-        elif event == "end-file" and msg.get("reason") == "error":
+        if event == "end-file" and msg.get("reason") == "error":
             # Usually an unavailable/blocked video; mpv moves on by itself.
             log.warning("track failed to play: %s", msg.get("file_error", "unknown error"))
 
@@ -246,11 +255,13 @@ class Player:
             self._queue_gen += 1
             self.queue = list(tracks)
             self._pos_offset = start
+            self._starting = start
             self._pending_before = (self._queue_gen, tracks[:start]) if start > 0 else None
             self._send(["loadfile", track_url(tracks[start]["videoId"]), "replace"])
             if start + 1 < len(tracks):
                 self._send(["loadlist", str(self._write_list(tracks[start + 1:])), "append"])
             self._send(["set_property", "pause", False])
+        self._notify()
 
     def _insert_before(self, gen: int, before: list[dict]) -> None:
         with self._lock:
@@ -272,21 +283,59 @@ class Player:
             self._send(["loadlist", str(path), "append"])
             self.queue.extend(tracks)
 
+    # -- controls ----------------------------------------------------------------
+
+    def toggle_pause(self) -> None:
+        with self._lock:
+            if self._running():
+                self._send(["cycle", "pause"])
+
+    def next(self) -> None:
+        with self._lock:
+            if self._running():
+                self._send_quiet(["playlist-next", "weak"])
+
+    def previous(self) -> None:
+        with self._lock:
+            if not self._running():
+                return
+            try:
+                position = self._send(["get_property", "time-pos"]) or 0
+            except PlayerError:
+                position = 0
+            if position > RESTART_THRESHOLD:
+                self._send(["seek", 0, "absolute"])
+            else:
+                self._send_quiet(["playlist-prev", "weak"])
+
+    def _send_quiet(self, command: list) -> None:
+        """For commands mpv rejects at the ends of the playlist."""
+        try:
+            self._send(command)
+        except PlayerError as e:
+            log.debug("ignored: %s", e)
+
     def state(self) -> dict:
         props = self._props
-        idle = props.get("idle-active", True) and props.get("playlist-pos", -1) in (-1, None)
-        if not self._running() or idle:
+        if not self._running():
             return {"state": "stopped", "index": None, "track": None}
         pos = props.get("playlist-pos")
         index = pos + self._pos_offset if isinstance(pos, int) and pos >= 0 else None
+        if self._starting is not None and index is None:
+            index = self._starting
+        idle = props.get("idle-active", True) and index is None
+        if idle:
+            return {"state": "stopped", "index": None, "track": None}
         track = self.queue[index] if index is not None and index < len(self.queue) else None
         # The URL is authoritative; the index can be briefly off while inserting.
         vid = video_id_from_url(props.get("path"))
         if vid and (track is None or track["videoId"] != vid):
             track = next((t for t in self.queue if t["videoId"] == vid), track)
+        if track is not None and not track.get("title") and props.get("media-title"):
+            track = dict(track, title=props["media-title"])
         if props.get("pause"):
             state = "paused"
-        elif props.get("core-idle"):
+        elif self._starting is not None or props.get("core-idle") or props.get("idle-active"):
             state = "loading"
         else:
             state = "playing"

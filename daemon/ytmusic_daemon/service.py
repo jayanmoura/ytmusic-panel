@@ -54,6 +54,18 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="video_id" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="TogglePause">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="Next">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="Previous">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <signal name="PlaybackChanged">
+      <arg type="s" name="json"/>
+    </signal>
     <signal name="AuthRequired"/>
   </interface>
 </node>
@@ -78,7 +90,9 @@ class Service:
     def __init__(self, loop: GLib.MainLoop):
         self.loop = loop
         self.client = Client()
-        self.player = Player()
+        self.player = Player(on_change=self._on_player_change)
+        self._playback_emit_id = 0
+        self._last_playback_json = None
         # Bumped on every new queue so late background appends are dropped.
         self._play_gen = 0
         self._play_lock = threading.Lock()
@@ -102,6 +116,9 @@ class Service:
                 self.client.get_playlist_tracks(pid, force=True)),
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
+            "TogglePause": lambda: self._control(self.player.toggle_pause),
+            "Next": lambda: self._control(self.player.next),
+            "Previous": lambda: self._control(self.player.previous),
         }
 
     # -- bus plumbing -----------------------------------------------------------
@@ -160,6 +177,31 @@ class Service:
         if self.connection:
             self.connection.emit_signal(None, OBJECT_PATH, INTERFACE, "AuthRequired", None)
         return GLib.SOURCE_REMOVE
+
+    # -- playback signal --------------------------------------------------------
+
+    def _on_player_change(self):
+        # Called from the mpv reader thread; coalesce bursts of property
+        # changes into one signal on the main loop.
+        GLib.idle_add(self._schedule_playback_emit)
+
+    def _schedule_playback_emit(self):
+        if not self._playback_emit_id:
+            self._playback_emit_id = GLib.timeout_add(80, self._emit_playback)
+        return GLib.SOURCE_REMOVE
+
+    def _emit_playback(self):
+        self._playback_emit_id = 0
+        payload = json.dumps(self.player.state(), ensure_ascii=False)
+        if payload != self._last_playback_json and self.connection:
+            self._last_playback_json = payload
+            self.connection.emit_signal(None, OBJECT_PATH, INTERFACE, "PlaybackChanged",
+                                        GLib.Variant("(s)", (payload,)))
+        return GLib.SOURCE_REMOVE
+
+    def _control(self, action) -> str:
+        action()
+        return ok(self.player.state())
 
     def _warm_up(self):
         try:
@@ -232,6 +274,9 @@ class Service:
         return {"queued": 1, "index": 0}
 
     def shutdown(self):
+        if self._playback_emit_id:
+            GLib.source_remove(self._playback_emit_id)
+            self._playback_emit_id = 0
         if self.connection and self._reg_id:
             self.connection.unregister_object(self._reg_id)
         self._pool.shutdown(wait=False, cancel_futures=True)

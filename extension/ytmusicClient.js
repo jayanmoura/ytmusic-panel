@@ -22,6 +22,10 @@ const IFACE_XML = `
     <method name="PlayTrack">
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
+    <method name="TogglePause"><arg type="s" direction="out"/></method>
+    <method name="Next"><arg type="s" direction="out"/></method>
+    <method name="Previous"><arg type="s" direction="out"/></method>
+    <signal name="PlaybackChanged"><arg type="s"/></signal>
     <signal name="AuthRequired"/>
   </interface>
 </node>`;
@@ -52,7 +56,9 @@ export class YTMusicClient {
         this._proxy = null;
         this._proxyPromise = null;
         this._authSignalId = 0;
+        this._playbackSignalId = 0;
         this.onAuthRequired = null;
+        this.onPlaybackChanged = null;
     }
 
     _getProxy() {
@@ -63,6 +69,14 @@ export class YTMusicClient {
             proxy.g_default_timeout = CALL_TIMEOUT_MS;
             this._authSignalId = proxy.connectSignal('AuthRequired',
                 () => this.onAuthRequired?.());
+            this._playbackSignalId = proxy.connectSignal('PlaybackChanged',
+                (_proxy, _sender, [json]) => {
+                    try {
+                        this.onPlaybackChanged?.(JSON.parse(json));
+                    } catch (e) {
+                        console.warn(`[ytmusic-panel] bad PlaybackChanged payload: ${e}`);
+                    }
+                });
             this._proxy = proxy;
             return proxy;
         }).catch(e => {
@@ -98,7 +112,11 @@ export class YTMusicClient {
         this._cancellable.cancel();
         if (this._proxy && this._authSignalId)
             this._proxy.disconnectSignal(this._authSignalId);
+        if (this._proxy && this._playbackSignalId)
+            this._proxy.disconnectSignal(this._playbackSignalId);
         this._authSignalId = 0;
+        this._playbackSignalId = 0;
+        this.onPlaybackChanged = null;
         this._proxy = null;
         this._proxyPromise = null;
         this.onAuthRequired = null;

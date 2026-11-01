@@ -144,3 +144,35 @@
 .ytmusic-row-play:focus {
   color: #fff;
 }
+
+.ytmusic-player {
+  padding: 4px 8px 4px 12px;
+  spacing: 8px;
+}
+
+.ytmusic-player-title {
+  font-weight: bold;
+}
+
+.ytmusic-player-artist {
+  font-size: 0.9em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.ytmusic-player-controls {
+  spacing: 2px;
+}
+
+.ytmusic-player-controls .ytmusic-icon-button {
+  padding: 8px;
+}
+
+.ytmusic-play-pause {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.ytmusic-row-playing .ytmusic-row-title,
+.ytmusic-row-playing .ytmusic-row-play {
+  color: #ff4e45;
+  font-weight: bold;
+}

@@ -68,6 +68,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._settings = extension.getSettings();
         this._client = new YTMusicClient();
         this._client.onAuthRequired = () => this._onAuthRequired();
+        this._client.onPlaybackChanged = state => this._updatePlayer(state);
+        this._playback = null;
 
         this._view = 'playlists';
         this._playlists = null;
@@ -87,9 +89,14 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._buildContent();
 
         this.menu.connect('open-state-changed', (_menu, open) => {
-            if (open && this._view === 'playlists')
+            if (!open)
+                return;
+            this._refreshPlayer();
+            if (this._view === 'playlists')
                 this._loadPlaylists(false);
         });
+        // Also subscribes to PlaybackChanged (the proxy is created on first call).
+        this._refreshPlayer();
 
         this._settingsChangedId = this._settings.connect(
             'changed::popup-max-height', () => this._applyMaxHeight());
@@ -175,6 +182,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         this._scroll.set_child(this._list);
         box.add_child(this._scroll);
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._buildPlayer();
     }
 
     _applyMaxHeight() {
@@ -434,6 +444,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         if (!track.available)
             row.add_style_class_name('ytmusic-row-unavailable');
+        row._videoId = track.videoId;
+        if (track.videoId && track.videoId === this._playback?.track?.videoId)
+            row.add_style_class_name('ytmusic-row-playing');
 
         const playButton = this._iconButton('media-playback-start-symbolic', 'Tocar',
             () => this._playFrom(index));
@@ -468,6 +481,106 @@ class YTMusicIndicator extends PanelMenu.Button {
             }));
         }
         return row;
+    }
+
+    // -- mini player -----------------------------------------------------------
+
+    _buildPlayer() {
+        const section = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(section);
+
+        const player = new St.BoxLayout({style_class: 'ytmusic-player', x_expand: true});
+        section.actor.add_child(player);
+
+        const info = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._playerTitle = ellipsized(new St.Label({style_class: 'ytmusic-player-title'}));
+        this._playerArtist = ellipsized(new St.Label({style_class: 'ytmusic-player-artist'}));
+        info.add_child(this._playerTitle);
+        info.add_child(this._playerArtist);
+        player.add_child(info);
+
+        const controls = new St.BoxLayout({style_class: 'ytmusic-player-controls'});
+        this._prevButton = this._iconButton('media-skip-backward-symbolic', 'Anterior',
+            () => this._control('Previous'));
+        this._playPauseButton = this._iconButton('media-playback-start-symbolic', 'Tocar',
+            () => this._control('TogglePause'));
+        this._playPauseButton.add_style_class_name('ytmusic-play-pause');
+        this._nextButton = this._iconButton('media-skip-forward-symbolic', 'Próxima',
+            () => this._control('Next'));
+        controls.add_child(this._prevButton);
+        controls.add_child(this._playPauseButton);
+        controls.add_child(this._nextButton);
+        player.add_child(controls);
+
+        this._updatePlayer(null);
+    }
+
+    async _refreshPlayer() {
+        try {
+            const status = await this._client.call('GetStatus');
+            this._updatePlayer(status.playback);
+        } catch (e) {
+            if (e.code !== 'cancelled')
+                this._updatePlayer(null);
+        }
+    }
+
+    async _control(method) {
+        try {
+            this._updatePlayer(await this._client.call(method));
+        } catch (e) {
+            if (e.code !== 'cancelled')
+                Main.notify('YouTube Music', (ERROR_TEXT[e.code] ?? [e.message])[0]);
+        }
+    }
+
+    _updatePlayer(state) {
+        // Late replies can land after destroy().
+        if (!this._client)
+            return;
+        this._playback = state;
+        const track = state?.track;
+        const active = !!state && state.state !== 'stopped';
+
+        if (!active) {
+            this._playerTitle.text = 'Nada tocando';
+            this._playerArtist.text = 'Escolha uma playlist ou música';
+        } else {
+            this._playerTitle.text = track?.title || 'Música sem título';
+            this._playerArtist.text = state.state === 'loading'
+                ? 'Carregando…'
+                : track?.artists || '';
+        }
+
+        const playing = state?.state === 'playing' || state?.state === 'loading';
+        this._playPauseButton.child.icon_name = playing
+            ? 'media-playback-pause-symbolic'
+            : 'media-playback-start-symbolic';
+        this._playPauseButton.accessible_name = playing ? 'Pausar' : 'Tocar';
+
+        for (const button of [this._prevButton, this._playPauseButton, this._nextButton]) {
+            button.reactive = active;
+            button.can_focus = active;
+        }
+
+        this._highlightPlayingRow(active ? track?.videoId : null);
+    }
+
+    _highlightPlayingRow(videoId) {
+        if (this._view !== 'tracks')
+            return;
+        for (const row of this._list.get_children()) {
+            if (row._videoId === undefined)
+                continue;
+            if (videoId && row._videoId === videoId)
+                row.add_style_class_name('ytmusic-row-playing');
+            else
+                row.remove_style_class_name('ytmusic-row-playing');
+        }
     }
 
     // -- playback --------------------------------------------------------------
