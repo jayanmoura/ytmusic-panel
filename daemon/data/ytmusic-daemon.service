@@ -5,7 +5,7 @@ After=graphical-session.target
 
 [Service]
 Type=dbus
-BusName=io.github.jayan.YTMusic
+BusName=io.github.jayanmoura.YTMusic
 ExecStart=%h/.local/share/ytmusic-daemon/venv/bin/ytmusic-daemon
 Restart=on-failure
 RestartSec=5

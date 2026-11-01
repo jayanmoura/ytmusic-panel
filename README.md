@@ -1,4 +1,8 @@
-# YouTube Music no painel do GNOME
+# ytmusic-panel
+
+Player não oficial do YouTube Music para o painel do GNOME Shell.
+
+> **Aviso:** projeto independente e não oficial, sem nenhuma ligação com o Google ou o YouTube, nem endossado por eles. "YouTube" e "YouTube Music" são marcas do Google LLC. O projeto usa a API interna do YouTube Music por meio do [ytmusicapi](https://github.com/sigma67/ytmusicapi) e do [yt-dlp](https://github.com/yt-dlp/yt-dlp); o Google pode mudar ou bloquear esse acesso a qualquer momento. Use por sua conta e risco.
 
 Extensão do GNOME Shell 50 que coloca o YouTube Music no painel superior. Pelo popup você vê suas playlists, abre e toca playlists ou músicas, busca músicas, adiciona músicas às suas playlists e controla a reprodução num mini player. As teclas de mídia do teclado e o controle de mídia do GNOME também funcionam.
 
@@ -9,7 +13,7 @@ São duas partes:
 - **Extensão** (`extension/`, UUID `ytmusic-panel@jayan`): só desenha a interface. Ela não acessa a rede; conversa com o serviço pelo D-Bus de sessão, sempre de forma assíncrona.
 - **Serviço** (`daemon/`, `ytmusic-daemon`): processo Python que roda como serviço systemd de usuário. Usa o [ytmusicapi](https://github.com/sigma67/ytmusicapi) para falar com a sua conta, o `mpv` (só áudio) para tocar, o `yt-dlp` para obter o áudio e o plugin `mpv-mpris` para expor o player via MPRIS.
 
-O serviço publica `io.github.jayan.YTMusic` no barramento de sessão (caminho `/io/github/jayan/YTMusic`). Todos os métodos devolvem JSON em texto: `{"ok": true, "data": ...}` ou `{"ok": false, "error": "...", "message": "..."}`.
+O serviço publica `io.github.jayanmoura.YTMusic` no barramento de sessão (caminho `/io/github/jayanmoura/YTMusic`). Todos os métodos devolvem JSON em texto: `{"ok": true, "data": ...}` ou `{"ok": false, "error": "...", "message": "..."}`.
 
 ## Requisitos
 
@@ -25,8 +29,8 @@ O resto (ytmusicapi, yt-dlp e o runtime JavaScript `deno`, que o yt-dlp precisa 
 ## Instalação
 
 ```bash
-git clone <url-do-repositório> ~/Projetos/ytmusic-panel
-cd ~/Projetos/ytmusic-panel
+git clone https://github.com/jayanmoura/ytmusic-panel.git
+cd ytmusic-panel
 ./install.sh
 ```
 
@@ -105,7 +109,7 @@ A engrenagem ao lado da busca, no popup, abre a mesma janela.
 journalctl --user -fu ytmusic-daemon                      # serviço
 journalctl -f -o cat /usr/bin/gnome-shell | grep -i ytmusic # extensão
 systemctl --user status ytmusic-daemon
-busctl --user call io.github.jayan.YTMusic /io/github/jayan/YTMusic io.github.jayan.YTMusic GetStatus
+busctl --user call io.github.jayanmoura.YTMusic /io/github/jayanmoura/YTMusic io.github.jayanmoura.YTMusic GetStatus
 ```
 
 ### Problemas comuns
@@ -159,3 +163,7 @@ Ciclo de desenvolvimento:
 - O yt-dlp usa o cliente `web_music` do YouTube: as URLs do cliente padrão retornam 403 quando abertas pelo mpv.
 - `--audio-client-name` do mpv não pode ter espaço: o mpv-mpris usa esse valor no nome D-Bus, e um nome inválido trava o mpv.
 - A busca usa o ytmusicapi em inglês, porque com idioma `pt` o filtro de músicas volta vazio. Títulos e artistas não são traduzidos, então nada muda na tela.
+
+## Licença
+
+GPL-2.0-or-later. Veja o arquivo [LICENSE](LICENSE).

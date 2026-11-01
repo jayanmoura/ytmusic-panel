@@ -7,6 +7,7 @@ name = "ytmusic-daemon"
 version = "1.1.0"
 description = "D-Bus service exposing YouTube Music to the ytmusic-panel GNOME extension"
 requires-python = ">=3.12"
+license = {text = "GPL-2.0-or-later"}
 # secretstorage lets yt-dlp decrypt Chromium-family cookies (GNOME keyring) for the browser login.
 dependencies = ["ytmusicapi>=1.12", "yt-dlp[default]>=2026.10", "deno", "secretstorage"]
 

@@ -1,9 +1,9 @@
 {
   "uuid": "ytmusic-panel@jayan",
-  "name": "YouTube Music Panel",
-  "description": "YouTube Music no painel superior: playlists, busca e reprodução.",
+  "name": "YTMusic Panel",
+  "description": "Player não oficial do YouTube Music no painel superior: playlists, busca e reprodução. Sem ligação com o Google ou o YouTube.",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.ytmusic-panel",
-  "url": "https://github.com/jayan/ytmusic-panel",
+  "url": "https://github.com/jayanmoura/ytmusic-panel",
   "version-name": "1.1"
 }

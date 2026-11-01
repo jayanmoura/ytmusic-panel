@@ -1,12 +1,12 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
-const BUS_NAME = 'io.github.jayan.YTMusic';
-const OBJECT_PATH = '/io/github/jayan/YTMusic';
+const BUS_NAME = 'io.github.jayanmoura.YTMusic';
+const OBJECT_PATH = '/io/github/jayanmoura/YTMusic';
 
 const IFACE_XML = `
 <node>
-  <interface name="io.github.jayan.YTMusic">
+  <interface name="io.github.jayanmoura.YTMusic">
     <method name="GetStatus"><arg type="s" direction="out"/></method>
     <method name="GetPlaylists"><arg type="s" direction="out"/></method>
     <method name="RefreshPlaylists"><arg type="s" direction="out"/></method>

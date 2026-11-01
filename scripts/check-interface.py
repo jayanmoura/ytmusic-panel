@@ -26,7 +26,7 @@ def members(xml: str) -> dict:
 
 daemon_src = (ROOT / "daemon/ytmusic_daemon/service.py").read_text()
 daemon_xml = re.search(r'INTROSPECTION_XML = f"""(.*?)"""', daemon_src, re.S).group(1)
-daemon_xml = daemon_xml.replace("{INTERFACE}", "io.github.jayan.YTMusic")
+daemon_xml = daemon_xml.replace("{INTERFACE}", "io.github.jayanmoura.YTMusic")
 
 ext_dir = ROOT / "extension"
 client_src = (ext_dir / "ytmusicClient.js").read_text()

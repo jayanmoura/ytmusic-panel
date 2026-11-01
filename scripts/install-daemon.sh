@@ -21,7 +21,7 @@ fi
 
 mkdir -p "$UNIT_DIR" "$DBUS_DIR"
 install -m 644 "$ROOT/daemon/data/ytmusic-daemon.service" "$UNIT_DIR/"
-install -m 644 "$ROOT/daemon/data/io.github.jayan.YTMusic.service" "$DBUS_DIR/"
+install -m 644 "$ROOT/daemon/data/io.github.jayanmoura.YTMusic.service" "$DBUS_DIR/"
 
 systemctl --user daemon-reload
 systemctl --user enable ytmusic-daemon.service

@@ -5,7 +5,7 @@ set -euo pipefail
 UUID="ytmusic-panel@jayan"
 EXT_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/ytmusic-daemon.service"
-DBUS_SERVICE="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/io.github.jayan.YTMusic.service"
+DBUS_SERVICE="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/io.github.jayanmoura.YTMusic.service"
 DATA_DIR="$HOME/.local/share/ytmusic-daemon"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ytmusic-daemon"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ytmusic-daemon"
