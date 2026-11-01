@@ -2,7 +2,6 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
-import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -12,35 +11,15 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {
     ERROR_TEXT, FILTER_DEBOUNCE_MS, LIKED_PLAYLIST_ID, NOW_PLAYING, NOW_PLAYING_CHROME,
-    PREPARE_DELAY_MS, PROGRESS_SYNC_MS, PROGRESS_TICK_MS, SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS,
-    SHARE_URL, TOAST_MS, TRACKS_PAGE_SIZE,
+    PROGRESS_SYNC_MS, PROGRESS_TICK_MS, SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS, TRACKS_PAGE_SIZE,
 } from './constants.js';
 import {formatTime, largeCover, normalize, numberFormat, sortPlaylists, trackCountText} from './util.js';
+import {CoverLoader} from './covers.js';
 import {YTMusicClient} from './ytmusicClient.js';
-
-function ellipsized(label) {
-    label.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-    return label;
-}
-
-// Clips its child and asks for no minimum width, so a long title doesn't push
-// the player controls; the child keeps its natural width (FixedLayout) and
-// scrolls inside (see _updateMarquee).
-const ClipBox = GObject.registerClass(
-class ClipBox extends St.Widget {
-    _init() {
-        super._init({
-            layout_manager: new Clutter.FixedLayout(),
-            clip_to_allocation: true,
-            x_expand: true,
-        });
-    }
-
-    vfunc_get_preferred_width(forHeight) {
-        const [, natural] = super.vfunc_get_preferred_width(forHeight);
-        return [0, natural];
-    }
-});
+import {ClipBox, ellipsized, iconButton, setToggled} from './widgets/common.js';
+import {FloatMenu} from './widgets/floatMenu.js';
+import {Toast} from './widgets/toast.js';
+import {TrackRowFactory} from './widgets/trackRow.js';
 
 const YTMusicIndicator = GObject.registerClass(
 class YTMusicIndicator extends PanelMenu.Button {
@@ -64,16 +43,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._results = [];
         this._searchTimeoutId = 0;
         this._viewBeforeSearch = 'playlists';
-        this._pendingCovers = []; // [url, St.Bin] waiting for _flushCovers()
         this._trackFilter = '';
         this._oldestFirst = false;
         this._tracksComplete = false;
         this._shownTracks = []; // indices into _tracks that pass the filter, in display order
         this._filterTimeoutId = 0;
-        this._prepareTimeoutId = 0;
-        this._toastTimeoutId = 0;
         this._settingSearchText = false;
-        this._floatTrack = null;
         this._overlayActor = null; // what the overlay shows: picker list or expanded player
         this._controlSets = []; // mini player and expanded player buttons
         this._npExtraHeight = 0; // mini player height, given to the expanded player
@@ -85,6 +60,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._lastSync = 0;
         // Bumped on every navigation/load; stale async replies are dropped.
         this._serial = 0;
+        this._covers = new CoverLoader(this);
+        this._trackRows = new TrackRowFactory(this);
 
         this.add_child(new St.Icon({
             gicon: this._icon('ytmusic-symbolic'),
@@ -99,7 +76,7 @@ class YTMusicIndicator extends PanelMenu.Button {
                 return; // the menu closes while being destroyed
             if (!open) {
                 this._stopProgress();
-                this._closeFloat();
+                this._float.close();
                 this._updateMarquee(); // stops it
                 return;
             }
@@ -144,18 +121,6 @@ class YTMusicIndicator extends PanelMenu.Button {
         return Gio.icon_new_for_string(`${this._extension.path}/icons/${name}.svg`);
     }
 
-    _iconButton(iconName, accessibleName, callback) {
-        const button = new St.Button({
-            style_class: 'ytmusic-icon-button',
-            can_focus: true,
-            accessible_name: accessibleName,
-            y_align: Clutter.ActorAlign.CENTER,
-            child: new St.Icon({icon_name: iconName, icon_size: 16}),
-        });
-        button.connect('clicked', callback);
-        return button;
-    }
-
     _buildContent() {
         const section = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(section);
@@ -168,31 +133,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         // to live inside the popup to receive clicks while the popup is open.
         const stack = new St.Widget({layout_manager: new Clutter.BinLayout(), x_expand: true});
         stack.add_child(box);
-        this._floatLayer = new St.Widget({
-            layout_manager: new Clutter.FixedLayout(),
-            x_expand: true,
-            y_expand: true,
-        });
-        // Clicking or scrolling anywhere outside the floating menu closes it.
-        // The layer itself isn't reactive, so the content gets events while
-        // the scrim is hidden.
-        this._floatScrim = new St.Widget({reactive: true, visible: false});
-        this._floatScrim.connect('button-press-event', () => {
-            this._closeFloat();
-            return Clutter.EVENT_STOP;
-        });
-        this._floatScrim.connect('scroll-event', () => {
-            this._closeFloat();
-            return Clutter.EVENT_STOP;
-        });
-        this._floatLayer.add_child(this._floatScrim);
-        this._floatMenu = new St.BoxLayout({
-            style_class: 'ytmusic-float-menu',
-            orientation: Clutter.Orientation.VERTICAL,
-            visible: false,
-        });
-        this._floatLayer.add_child(this._floatMenu);
-        stack.add_child(this._floatLayer);
+        this._float = new FloatMenu(this);
+        stack.add_child(this._float.layer);
         section.actor.add_child(stack);
 
         // Search field.
@@ -211,7 +153,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         // Search row: [search field] [settings]
         this._searchRow = new St.BoxLayout({style_class: 'ytmusic-search-row'});
         this._searchRow.add_child(this._searchEntry);
-        this._settingsButton = this._iconButton('emblem-system-symbolic', 'Configurações',
+        this._settingsButton = iconButton('emblem-system-symbolic', 'Configurações',
             () => this._openSettings());
         this._searchRow.add_child(this._settingsButton);
         box.add_child(this._searchRow);
@@ -227,7 +169,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         const titleRow = new St.BoxLayout({style_class: 'ytmusic-title-row'});
         header.add_child(titleRow);
 
-        this._backButton = this._iconButton('go-previous-symbolic', 'Voltar',
+        this._backButton = iconButton('go-previous-symbolic', 'Voltar',
             () => this._goBack());
         this._backButton.visible = false;
         titleRow.add_child(this._backButton);
@@ -241,12 +183,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         titleRow.add_child(this._title);
 
         // Tracks view only: newest first (the playlist's order) or oldest first.
-        this._sortButton = this._iconButton('view-sort-descending-symbolic', '',
+        this._sortButton = iconButton('view-sort-descending-symbolic', '',
             () => this._toggleOldestFirst());
         this._sortButton.visible = false;
         titleRow.add_child(this._sortButton);
 
-        this._refreshButton = this._iconButton('view-refresh-symbolic', 'Atualizar',
+        this._refreshButton = iconButton('view-refresh-symbolic', 'Atualizar',
             () => this._refresh());
         titleRow.add_child(this._refreshButton);
 
@@ -290,12 +232,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._savedHeader = null;
 
         // Short confirmations ("Link copiado"), shown over the bottom of the list.
-        this._toast = new St.Label({
-            style_class: 'ytmusic-toast',
-            x_align: Clutter.ActorAlign.CENTER,
-            visible: false,
-        });
-        box.add_child(this._toast);
+        this._toast = new Toast();
+        box.add_child(this._toast.actor);
 
         this._playerSeparator = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(this._playerSeparator);
@@ -390,15 +328,18 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _showToast(text) {
-        this._toast.text = text;
-        this._toast.visible = true;
-        if (this._toastTimeoutId)
-            GLib.source_remove(this._toastTimeoutId);
-        this._toastTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, TOAST_MS, () => {
-            this._toastTimeoutId = 0;
-            this._toast.visible = false;
-            return GLib.SOURCE_REMOVE;
-        });
+        this._toast.show(text);
+    }
+
+    // A track was removed through the floating menu.
+    _onTrackRemoved(track, playlist) {
+        this._playlists = null; // counts changed; reload on next visit
+        if (this._view === 'tracks' && this._playlist === playlist) {
+            this._tracks = this._tracks.filter(t => t.videoId !== track.videoId);
+            this._updateTracksSubtitle({complete: true, tracks: this._tracks});
+            this._rerenderTracksKeepingScroll();
+        }
+        this._showToast('Removida da playlist');
     }
 
     _goBack() {
@@ -413,7 +354,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _clearList() {
-        this._closeFloat();
+        this._float.close();
         this._list.destroy_all_children();
         this._list.style = null;
         this._moreButton = null;
@@ -528,12 +469,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
         for (const playlist of this._playlists)
             this._list.add_child(this._createPlaylistRow(playlist));
-        this._flushCovers();
+        this._covers.flush();
     }
 
     _createPlaylistRow(playlist, onClick = () => this._showTracks(playlist)) {
         const row = new St.BoxLayout({x_expand: true, style_class: 'ytmusic-row-content'});
-        const cover = this._cover(playlist.thumbnail);
+        const cover = this._covers.cover(playlist.thumbnail);
         if (cover)
             row.add_child(cover);
 
@@ -665,10 +606,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         const end = Math.min(this._renderedTracks + TRACKS_PAGE_SIZE, this._shownTracks.length);
         for (let n = this._renderedTracks; n < end; n++) {
             const i = this._shownTracks[n];
-            this._list.add_child(this._createTrackRow(this._tracks[i], () => this._playFrom(i), true));
+            this._list.add_child(this._trackRows.create(this._tracks[i], () => this._playFrom(i), true));
         }
         this._renderedTracks = end;
-        this._flushCovers();
+        this._covers.flush();
         this._updateMoreButton();
     }
 
@@ -688,7 +629,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             ? 'view-sort-ascending-symbolic' : 'view-sort-descending-symbolic';
         button.accessible_name = this._oldestFirst
             ? 'Mostrando as mais antigas primeiro' : 'Mostrando as mais recentes primeiro';
-        this._setToggled(button, this._oldestFirst);
+        setToggled(button, this._oldestFirst);
         button.reactive = this._tracksComplete;
         button.can_focus = this._tracksComplete;
     }
@@ -729,208 +670,6 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         this._moreButton.connect('clicked', () => this._renderMoreTracks());
         this._list.add_child(this._moreButton);
-    }
-
-    _createTrackRow(track, onPlay, inPlaylist = false) {
-        const row = new St.BoxLayout({
-            style_class: 'ytmusic-row ytmusic-track-row',
-            x_expand: true,
-            reactive: true,
-            track_hover: true,
-        });
-        if (track.available && track.videoId)
-            row.connect('notify::hover', () => this._onTrackHover(row, track));
-        if (!track.available)
-            row.add_style_class_name('ytmusic-row-unavailable');
-        row._videoId = track.videoId;
-        if (track.videoId && track.videoId === this._playback?.track?.videoId)
-            row.add_style_class_name('ytmusic-row-playing');
-
-        const playButton = this._iconButton('media-playback-start-symbolic', 'Tocar', onPlay);
-        playButton.add_style_class_name('ytmusic-row-play');
-        playButton.reactive = track.available;
-        playButton.can_focus = track.available;
-        row.add_child(playButton);
-        const cover = this._cover(track.thumbnail);
-        if (cover)
-            row.add_child(cover);
-
-        const text = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-            accessible_name: track.artists ? `${track.title}, ${track.artists}` : track.title,
-        });
-        text.add_child(ellipsized(new St.Label({
-            text: track.title,
-            style_class: 'ytmusic-row-title',
-        })));
-        if (track.artists) {
-            text.add_child(ellipsized(new St.Label({
-                text: track.artists,
-                style_class: 'ytmusic-row-detail',
-            })));
-        }
-        row.add_child(text);
-
-        if (track.duration) {
-            row.add_child(new St.Label({
-                text: track.duration,
-                style_class: 'ytmusic-row-detail',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-
-        // Inside a playlist: a menu with the track actions; in search results: add to a playlist.
-        const actionButton = inPlaylist
-            ? this._iconButton('view-more-symbolic', 'Mais opções',
-                button => this._openActions(track, button))
-            : this._iconButton('list-add-symbolic', 'Adicionar a uma playlist',
-                () => this._openPicker(track));
-        actionButton.add_style_class_name('ytmusic-row-add');
-        actionButton.reactive = track.available;
-        actionButton.can_focus = track.available;
-        row.add_child(actionButton);
-        return row;
-    }
-
-    _onTrackHover(row, track) {
-        if (this._prepareTimeoutId) {
-            GLib.source_remove(this._prepareTimeoutId);
-            this._prepareTimeoutId = 0;
-        }
-        if (!row.hover)
-            return;
-        this._prepareTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PREPARE_DELAY_MS, () => {
-            this._prepareTimeoutId = 0;
-            this._client?.call('Prepare', track.videoId).catch(() => {});
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    // -- track actions (the ⋮ menu inside a playlist) ----------------------------
-
-    _openActions(track, anchor) {
-        if (!track.videoId)
-            return;
-        this._closeFloat();
-        this._floatTrack = track;
-        const menu = this._floatMenu;
-
-        const title = ellipsized(new St.Label({text: track.title, style_class: 'ytmusic-float-title'}));
-        menu.add_child(title);
-
-        const playlist = this._playlist;
-        const actions = [
-            ['list-add-symbolic', 'Adicionar à fila', () => this._enqueue(track, 'Enqueue')],
-            ['media-skip-forward-symbolic', 'Tocar a seguir', () => this._enqueue(track, 'PlayNext')],
-            ['folder-new-symbolic', 'Adicionar a outra playlist', () => {
-                this._closeFloat();
-                this._openPicker(track);
-            }],
-            ['edit-copy-symbolic', 'Compartilhar (copiar link)', () => this._share(track)],
-        ];
-        for (const [icon, label, callback] of actions)
-            menu.add_child(this._actionRow(icon, label, callback));
-
-        if (playlist && (playlist.owned || playlist.id === LIKED_PLAYLIST_ID)) {
-            const label = playlist.id === LIKED_PLAYLIST_ID
-                ? 'Remover de Músicas que gostei' : 'Remover da playlist';
-            const row = this._actionRow('user-trash-symbolic', label, () => {
-                // First click asks for confirmation.
-                if (!row._confirming) {
-                    row._confirming = true;
-                    row._label.text = 'Clique de novo para remover';
-                    row.add_style_class_name('ytmusic-row-destructive');
-                    return;
-                }
-                this._remove(track, playlist);
-            });
-            menu.add_child(row);
-        }
-
-        // Place it under the ⋮ button, right-aligned to it; above when there's no room.
-        const layer = this._floatLayer;
-        this._floatScrim.set_size(layer.width, layer.height);
-        this._floatScrim.visible = true;
-        menu.visible = true;
-        const [, menuWidth] = menu.get_preferred_width(-1);
-        const [, menuHeight] = menu.get_preferred_height(menuWidth);
-        const [layerX, layerY] = layer.get_transformed_position();
-        const [anchorX, anchorY] = anchor.get_transformed_position();
-        const [anchorW, anchorH] = anchor.get_transformed_size();
-        let x = anchorX - layerX + anchorW - menuWidth;
-        let y = anchorY - layerY + anchorH;
-        if (y + menuHeight > layer.height)
-            y = anchorY - layerY - menuHeight;
-        x = Math.max(4, Math.min(x, layer.width - menuWidth - 4));
-        y = Math.max(4, Math.min(y, layer.height - menuHeight - 4));
-        menu.set_position(Math.round(x), Math.round(y));
-        menu.get_first_child()?.get_next_sibling()?.grab_key_focus();
-    }
-
-    _closeFloat() {
-        if (!this._floatTrack)
-            return;
-        this._floatTrack = null;
-        this._floatMenu.destroy_all_children();
-        this._floatMenu.visible = false;
-        this._floatScrim.visible = false;
-    }
-
-    _actionRow(iconName, text, callback) {
-        const box = new St.BoxLayout({style_class: 'ytmusic-row-content', x_expand: true});
-        box.add_child(new St.Icon({icon_name: iconName, icon_size: 16, y_align: Clutter.ActorAlign.CENTER}));
-        const label = new St.Label({text, y_align: Clutter.ActorAlign.CENTER, x_expand: true});
-        box.add_child(label);
-        const button = new St.Button({
-            style_class: 'ytmusic-float-item',
-            child: box,
-            can_focus: true,
-            x_expand: true,
-            accessible_name: text,
-        });
-        button._label = label;
-        button.connect('clicked', callback);
-        return button;
-    }
-
-    async _enqueue(track, method) {
-        this._closeFloat();
-        try {
-            await this._client.call(method, track.videoId);
-            if (!this._destroyed)
-                this._showToast(method === 'PlayNext' ? 'Vai tocar a seguir' : 'Adicionada à fila');
-        } catch (e) {
-            if (e.code !== 'cancelled' && !this._destroyed)
-                this._showToast((ERROR_TEXT[e.code] ?? [e.message])[0]);
-        }
-    }
-
-    _share(track) {
-        St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, SHARE_URL + track.videoId);
-        this._closeFloat();
-        this._showToast('Link copiado');
-    }
-
-    async _remove(track, playlist) {
-        this._closeFloat();
-        try {
-            await this._client.call('RemoveFromPlaylist', playlist.id, track.videoId);
-        } catch (e) {
-            if (e.code !== 'cancelled' && !this._destroyed)
-                this._showToast(e.code === 'bad_request' ? e.message : (ERROR_TEXT[e.code] ?? [e.message])[0]);
-            return;
-        }
-        if (this._destroyed)
-            return;
-        this._playlists = null; // counts changed; reload on next visit
-        if (this._view === 'tracks' && this._playlist === playlist) {
-            this._tracks = this._tracks.filter(t => t.videoId !== track.videoId);
-            this._updateTracksSubtitle({complete: true, tracks: this._tracks});
-            this._rerenderTracksKeepingScroll();
-        }
-        this._showToast('Removida da playlist');
     }
 
     // Covers the current view with the picker/actions list.
@@ -1034,7 +773,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             const row = this._createPlaylistRow(playlist, () => this._addToPlaylist(track, playlist));
             this._pickerList.add_child(row);
         }
-        this._flushCovers();
+        this._covers.flush();
     }
 
     async _addToPlaylist(track, playlist) {
@@ -1162,8 +901,8 @@ class YTMusicIndicator extends PanelMenu.Button {
             return;
         }
         for (const track of this._results)
-            this._list.add_child(this._createTrackRow(track, () => this._play('PlayTrack', track.videoId)));
-        this._flushCovers();
+            this._list.add_child(this._trackRows.create(track, () => this._play('PlayTrack', track.videoId)));
+        this._covers.flush();
     }
 
     // -- covers ----------------------------------------------------------------
@@ -1189,64 +928,13 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     // Square cover with a placeholder; the image is filled in by _flushCovers().
-    _cover(url, styleClass = 'ytmusic-cover') {
-        if (!this._settings.get_boolean('show-covers'))
-            return null;
-        const bin = new St.Bin({
-            style_class: styleClass,
-            y_align: Clutter.ActorAlign.CENTER,
-            child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
-        });
-        if (url) {
-            this._pendingCovers.push([url, bin]);
-            bin.connect('destroy', () => {
-                bin._destroyed = true;
-            });
-        }
-        return bin;
-    }
-
-    // Asks the daemon for local copies of the covers queued since the last call.
-    async _flushCovers() {
-        const pending = this._pendingCovers;
-        this._pendingCovers = [];
-        if (pending.length === 0)
-            return;
-        const urls = [...new Set(pending.map(([url]) => url))];
-        for (let i = 0; i < urls.length; i += 200) {
-            let paths;
-            try {
-                paths = await this._client.call('GetCovers', JSON.stringify(urls.slice(i, i + 200)));
-            } catch (e) {
-                if (!e.code)
-                    console.error(e, '[ytmusic-panel] cover loading failed');
-                else if (e.code !== 'cancelled')
-                    console.warn(`[ytmusic-panel] covers unavailable: ${e.code}`);
-                return;
-            }
-            if (!this._client)
-                return;
-            for (const [url, bin] of pending) {
-                const path = paths[url];
-                if (path && !bin._destroyed)
-                    this._setCoverImage(bin, path);
-            }
-        }
-    }
-
-    _setCoverImage(bin, path) {
-        bin.child = null;
-        const uri = GLib.filename_to_uri(path, null);
-        bin.style = `${bin._baseStyle ?? ''} background-image: url("${uri}");`;
-    }
-
     _updatePlayerCover(url, active) {
         if (url === this._playerCoverUrl)
             return;
         this._playerCoverUrl = url;
         this._playerCoverSlot.child?.destroy();
-        this._playerCoverSlot.child = active ? this._cover(url, 'ytmusic-cover ytmusic-player-cover') : null;
-        this._flushCovers();
+        this._playerCoverSlot.child = active ? this._covers.cover(url, 'ytmusic-cover ytmusic-player-cover') : null;
+        this._covers.flush();
     }
 
     // -- mini player -----------------------------------------------------------
@@ -1290,16 +978,16 @@ class YTMusicIndicator extends PanelMenu.Button {
         openBox.add_child(info);
 
         const controls = new St.BoxLayout({style_class: 'ytmusic-player-controls'});
-        this._repeatButton = this._iconButton('media-playlist-repeat-symbolic', 'Repetir',
+        this._repeatButton = iconButton('media-playlist-repeat-symbolic', 'Repetir',
             () => this._control('CycleRepeat'));
-        this._shuffleButton = this._iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
+        this._shuffleButton = iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
             () => this._control('ToggleShuffle'));
-        this._prevButton = this._iconButton('media-skip-backward-symbolic', 'Anterior',
+        this._prevButton = iconButton('media-skip-backward-symbolic', 'Anterior',
             () => this._control('Previous'));
-        this._playPauseButton = this._iconButton('media-playback-start-symbolic', 'Tocar',
+        this._playPauseButton = iconButton('media-playback-start-symbolic', 'Tocar',
             () => this._control('TogglePause'));
         this._playPauseButton.add_style_class_name('ytmusic-play-pause');
-        this._nextButton = this._iconButton('media-skip-forward-symbolic', 'Próxima',
+        this._nextButton = iconButton('media-skip-forward-symbolic', 'Próxima',
             () => this._control('Next'));
         this._controlSets.push({
             repeat: this._repeatButton, shuffle: this._shuffleButton, prev: this._prevButton,
@@ -1374,9 +1062,9 @@ class YTMusicIndicator extends PanelMenu.Button {
             set.repeat.accessible_name = {
                 off: 'Repetir: desligado', all: 'Repetir: todas', one: 'Repetir: esta música',
             }[repeat];
-            this._setToggled(set.repeat, repeat !== 'off');
+            setToggled(set.repeat, repeat !== 'off');
             set.shuffle.accessible_name = state?.shuffle ? 'Aleatório: ligado' : 'Aleatório: desligado';
-            this._setToggled(set.shuffle, !!state?.shuffle);
+            setToggled(set.shuffle, !!state?.shuffle);
             for (const button of [set.repeat, set.shuffle]) {
                 button.reactive = !!state;
                 button.can_focus = !!state;
@@ -1475,15 +1163,15 @@ class YTMusicIndicator extends PanelMenu.Button {
             x_align: Clutter.ActorAlign.CENTER,
         });
         const set = {
-            shuffle: this._iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
+            shuffle: iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
                 () => this._control('ToggleShuffle')),
-            prev: this._iconButton('media-skip-backward-symbolic', 'Anterior',
+            prev: iconButton('media-skip-backward-symbolic', 'Anterior',
                 () => this._control('Previous')),
-            playPause: this._iconButton('media-playback-start-symbolic', 'Tocar',
+            playPause: iconButton('media-playback-start-symbolic', 'Tocar',
                 () => this._control('TogglePause')),
-            next: this._iconButton('media-skip-forward-symbolic', 'Próxima',
+            next: iconButton('media-skip-forward-symbolic', 'Próxima',
                 () => this._control('Next')),
-            repeat: this._iconButton('media-playlist-repeat-symbolic', 'Repetir',
+            repeat: iconButton('media-playlist-repeat-symbolic', 'Repetir',
                 () => this._control('CycleRepeat')),
         };
         set.playPause.add_style_class_name('ytmusic-play-pause');
@@ -1505,7 +1193,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
         if (!this._playback || this._playback.state === 'stopped')
             return;
-        this._closeFloat();
+        this._float.close();
         // The controls move into the expanded player; it takes the mini player's space.
         // (the search row is hidden by the overlay too)
         this._npExtraHeight = this._playerSection.actor.height +
@@ -1535,7 +1223,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (url !== this._npCoverUrl) {
             this._npCoverUrl = url;
             this._npCoverSlot.child?.destroy();
-            const cover = this._cover(url, 'ytmusic-cover ytmusic-np-cover') ??
+            const cover = this._covers.cover(url, 'ytmusic-cover ytmusic-np-cover') ??
                 new St.Bin({
                     style_class: 'ytmusic-cover ytmusic-np-cover',
                     child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
@@ -1546,7 +1234,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             cover._baseStyle = `width: ${size}px; height: ${size}px;`;
             cover.style = cover._baseStyle;
             this._npCoverSlot.child = cover;
-            this._flushCovers();
+            this._covers.flush();
         }
         if (state?.duration)
             this._progressBase.duration = state.duration;
@@ -1631,13 +1319,6 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
     }
 
-    _setToggled(button, on) {
-        if (on)
-            button.add_style_class_name('ytmusic-toggle-on');
-        else
-            button.remove_style_class_name('ytmusic-toggle-on');
-    }
-
     // Long titles scroll back and forth while the popup is open.
     _updateMarquee() {
         const label = this._playerTitle;
@@ -1700,13 +1381,17 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._destroyed = true;
         this._serial++;
         this._playerTitle.remove_transition('translation-x');
-        for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_prepareTimeoutId', '_toastTimeoutId',
-            '_progressTimeoutId', '_restoreScrollIdleId']) {
+        for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_progressTimeoutId',
+            '_restoreScrollIdleId']) {
             if (this[id]) {
                 GLib.source_remove(this[id]);
                 this[id] = 0;
             }
         }
+        this._toast.destroy();
+        this._trackRows.destroy();
+        this._float.destroy();
+        this._covers.destroy();
         this._client?.destroy();
         this._client = null;
         for (const id of this._settingsChangedIds)
