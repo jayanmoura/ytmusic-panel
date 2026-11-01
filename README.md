@@ -180,8 +180,32 @@ Ciclo de desenvolvimento:
 
 - **Extensão**: `./scripts/nested-shell.sh` abre uma GNOME Shell numa janela, com uma cópia do serviço no barramento isolado dela. Feche e abra de novo para recarregar o código. Os logs saem no terminal.
 - **Serviço**: depois de editar, `systemctl --user restart ytmusic-daemon`.
-- **Interface D-Bus**: ao adicionar ou mudar um método, atualize `INTROSPECTION_XML` em `service.py` e `IFACE_XML` em `ytmusicClient.js`, e rode `python3 scripts/check-interface.py`.
+- **Interface D-Bus**: ao adicionar ou mudar um método, atualize `INTROSPECTION_XML` em `service.py`, `IFACE_XML` em `ytmusicClient.js` e `METHOD_ARGS` em `validation.py`.
 - Para testar a reprodução sem som, inicie o serviço com `YTMUSIC_MPV_EXTRA_ARGS=--ao=null`.
+
+### Testes e lint
+
+Rodam também no GitHub Actions a cada push e pull request (`.github/workflows/ci.yml`).
+
+Python (no venv do serviço; as ferramentas são dependências opcionais `[dev]`):
+
+```bash
+V=~/.local/share/ytmusic-daemon/venv/bin
+$V/pip install -e "daemon[dev]"                          # pytest e ruff, uma vez
+$V/pytest daemon                                         # testes, sem rede e sem mpv
+$V/ruff check --config daemon/pyproject.toml daemon scripts
+python3 scripts/check-interface.py                       # interface D-Bus igual nos dois lados
+python3 scripts/check-calls.py                           # métodos do indicador chamados pelos módulos
+```
+
+Os testes não tocam nas suas credenciais: as pastas XDG apontam para um diretório temporário.
+
+Extensão (eslint, instalado localmente em `node_modules/`):
+
+```bash
+npm install          # uma vez
+npm run lint
+```
 
 ### Decisões e armadilhas conhecidas
 
