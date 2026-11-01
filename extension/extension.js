@@ -67,6 +67,8 @@ const PROGRESS_TICK_MS = 250;
 // The position is interpolated locally and re-read from the service this often.
 const PROGRESS_SYNC_MS = 5000;
 const NOW_PLAYING = {videoId: null}; // overlay marker for the expanded player
+// Height of everything in the expanded player except the cover.
+const NOW_PLAYING_CHROME = 250;
 
 // Thumbnails come at 120px; ask the image server for a size fit for the big cover.
 function largeCover(url) {
@@ -145,6 +147,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._settingSearchText = false;
         this._floatTrack = null;
         this._overlayActor = null; // what the overlay shows: picker list or expanded player
+        this._controlSets = []; // mini player and expanded player buttons
+        this._npExtraHeight = 0; // mini player height, given to the expanded player
         this._progressTimeoutId = 0;
         this._progressBase = {position: 0, at: 0, duration: null};
         this._lastSync = 0;
@@ -360,7 +364,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         box.add_child(this._toast);
 
-        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._playerSeparator = new PopupMenu.PopupSeparatorMenuItem();
+        this.menu.addMenuItem(this._playerSeparator);
         this._buildPlayer();
     }
 
@@ -377,8 +382,12 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _setListHeight(min, max) {
-        for (const scroll of [this._scroll, this._pickerScroll, this._nowPlaying])
+        for (const scroll of [this._scroll, this._pickerScroll])
             scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
+        // The expanded player also takes the space of the mini player it hides.
+        const extra = this._npExtraHeight;
+        this._nowPlaying.style = `min-height: ${min + extra}px; max-height: ${max + extra}px;`;
+        this._listHeight = min;
     }
 
     // Called with the menu open (the actors must be on the stage to measure).
@@ -1036,6 +1045,14 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._pickerTrack = null;
         this._pickerList.destroy_all_children();
         this._pickerScroll.visible = false;
+        if (this._overlayActor === this._nowPlaying) {
+            this._playerSection.actor.show();
+            this._playerSeparator.actor.show();
+            this._npExtraHeight = 0;
+            const h = this._listHeight ?? this._settings.get_int('popup-height');
+            this._setListHeight(h, h);
+            this._updateMarquee();
+        }
         this._nowPlaying.visible = false;
         this._overlayActor = null;
         this._stopProgress();
@@ -1279,7 +1296,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     _setCoverImage(bin, path) {
         bin.child = null;
         const uri = GLib.filename_to_uri(path, null);
-        bin.style = `background-image: url("${uri}");`;
+        bin.style = `${bin._baseStyle ?? ''} background-image: url("${uri}");`;
     }
 
     _updatePlayerCover(url, active) {
@@ -1296,6 +1313,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     _buildPlayer() {
         const section = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(section);
+        this._playerSection = section;
 
         const player = new St.BoxLayout({style_class: 'ytmusic-player', x_expand: true});
         section.actor.add_child(player);
@@ -1342,6 +1360,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._playPauseButton.add_style_class_name('ytmusic-play-pause');
         this._nextButton = this._iconButton('media-skip-forward-symbolic', 'Próxima',
             () => this._control('Next'));
+        this._controlSets.push({
+            repeat: this._repeatButton, shuffle: this._shuffleButton, prev: this._prevButton,
+            playPause: this._playPauseButton, next: this._nextButton,
+        });
         controls.add_child(this._repeatButton);
         controls.add_child(this._shuffleButton);
         controls.add_child(this._prevButton);
@@ -1393,29 +1415,31 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
 
         const playing = state?.state === 'playing' || state?.state === 'loading';
-        this._playPauseButton.child.icon_name = playing
-            ? 'media-playback-pause-symbolic'
-            : 'media-playback-start-symbolic';
-        this._playPauseButton.accessible_name = playing ? 'Pausar' : 'Tocar';
-
-        for (const button of [this._prevButton, this._playPauseButton, this._nextButton]) {
-            button.reactive = active;
-            button.can_focus = active;
-        }
-
-        // Repeat and shuffle also work before anything plays (they apply to the next queue).
         const repeat = state?.repeat ?? 'off';
-        this._repeatButton.child.icon_name = repeat === 'one'
-            ? 'media-playlist-repeat-song-symbolic' : 'media-playlist-repeat-symbolic';
-        this._repeatButton.accessible_name = {
-            off: 'Repetir: desligado', all: 'Repetir: todas', one: 'Repetir: esta música',
-        }[repeat];
-        this._setToggled(this._repeatButton, repeat !== 'off');
-        this._shuffleButton.accessible_name = state?.shuffle ? 'Aleatório: ligado' : 'Aleatório: desligado';
-        this._setToggled(this._shuffleButton, !!state?.shuffle);
-        for (const button of [this._repeatButton, this._shuffleButton]) {
-            button.reactive = !!state;
-            button.can_focus = !!state;
+        for (const set of this._controlSets) {
+            set.playPause.child.icon_name = playing
+                ? 'media-playback-pause-symbolic'
+                : 'media-playback-start-symbolic';
+            set.playPause.accessible_name = playing ? 'Pausar' : 'Tocar';
+
+            for (const button of [set.prev, set.playPause, set.next]) {
+                button.reactive = active;
+                button.can_focus = active;
+            }
+
+            // Repeat and shuffle also work before anything plays (they apply to the next queue).
+            set.repeat.child.icon_name = repeat === 'one'
+                ? 'media-playlist-repeat-song-symbolic' : 'media-playlist-repeat-symbolic';
+            set.repeat.accessible_name = {
+                off: 'Repetir: desligado', all: 'Repetir: todas', one: 'Repetir: esta música',
+            }[repeat];
+            this._setToggled(set.repeat, repeat !== 'off');
+            set.shuffle.accessible_name = state?.shuffle ? 'Aleatório: ligado' : 'Aleatório: desligado';
+            this._setToggled(set.shuffle, !!state?.shuffle);
+            for (const button of [set.repeat, set.shuffle]) {
+                button.reactive = !!state;
+                button.can_focus = !!state;
+            }
         }
 
         this._highlightPlayingRow(active ? track?.videoId : null);
@@ -1455,18 +1479,19 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         this._nowPlaying.add_child(inner);
 
+        // Like the YouTube Music phone app: album on top, cover, title and
+        // artist, progress, then the controls.
+        this._npAlbum = ellipsized(new St.Label({style_class: 'ytmusic-np-album', x_align: Clutter.ActorAlign.CENTER}));
+        inner.add_child(this._npAlbum);
+
         this._npCoverSlot = new St.Bin({x_align: Clutter.ActorAlign.CENTER});
         this._npCoverUrl = undefined;
         inner.add_child(this._npCoverSlot);
 
-        this._npTitle = new St.Label({style_class: 'ytmusic-np-title', x_align: Clutter.ActorAlign.CENTER});
-        this._npTitle.clutter_text.line_wrap = true;
-        this._npTitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        this._npTitle = ellipsized(new St.Label({style_class: 'ytmusic-np-title', x_align: Clutter.ActorAlign.CENTER}));
         this._npArtist = ellipsized(new St.Label({style_class: 'ytmusic-np-artist', x_align: Clutter.ActorAlign.CENTER}));
-        this._npAlbum = ellipsized(new St.Label({style_class: 'ytmusic-np-album', x_align: Clutter.ActorAlign.CENTER}));
         inner.add_child(this._npTitle);
         inner.add_child(this._npArtist);
-        inner.add_child(this._npAlbum);
 
         // Progress: click anywhere on it to jump there. The reactive area is
         // taller than the visible bar so it's easy to hit.
@@ -1504,6 +1529,31 @@ class YTMusicIndicator extends PanelMenu.Button {
         times.add_child(this._npTotal);
         inner.add_child(times);
 
+        const controls = new St.BoxLayout({
+            style_class: 'ytmusic-np-controls',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        const set = {
+            shuffle: this._iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
+                () => this._control('ToggleShuffle')),
+            prev: this._iconButton('media-skip-backward-symbolic', 'Anterior',
+                () => this._control('Previous')),
+            playPause: this._iconButton('media-playback-start-symbolic', 'Tocar',
+                () => this._control('TogglePause')),
+            next: this._iconButton('media-skip-forward-symbolic', 'Próxima',
+                () => this._control('Next')),
+            repeat: this._iconButton('media-playlist-repeat-symbolic', 'Repetir',
+                () => this._control('CycleRepeat')),
+        };
+        set.playPause.add_style_class_name('ytmusic-play-pause');
+        set.playPause.add_style_class_name('ytmusic-np-play');
+        for (const button of [set.shuffle, set.prev, set.playPause, set.next, set.repeat]) {
+            button.child.icon_size = button === set.playPause ? 28 : 20;
+            controls.add_child(button);
+        }
+        this._controlSets.push(set);
+        inner.add_child(controls);
+
         parent.add_child(this._nowPlaying);
     }
 
@@ -1515,8 +1565,18 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (!this._playback || this._playback.state === 'stopped')
             return;
         this._closeFloat();
+        // The controls move into the expanded player; it takes the mini player's space.
+        // (the search row is hidden by the overlay too)
+        this._npExtraHeight = this._playerSection.actor.height +
+            this._playerSeparator.actor.height + this._searchRow.height +
+            (this._subtitle.visible ? this._subtitle.height : 0);
+        this._playerSection.actor.hide();
+        this._playerSeparator.actor.hide();
+        const h = this._listHeight ?? this._settings.get_int('popup-height');
+        this._setListHeight(h, h);
         this._enterOverlay(NOW_PLAYING, 'Tocando agora', null, this._nowPlaying);
         this._nowPlayingKey = null;
+        this._npCoverUrl = undefined; // re-create the cover at the current size
         this._renderNowPlaying();
         this._syncPosition();
         this._startProgress();
@@ -1534,11 +1594,17 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (url !== this._npCoverUrl) {
             this._npCoverUrl = url;
             this._npCoverSlot.child?.destroy();
-            this._npCoverSlot.child = this._cover(url, 'ytmusic-cover ytmusic-np-cover') ??
+            const cover = this._cover(url, 'ytmusic-cover ytmusic-np-cover') ??
                 new St.Bin({
                     style_class: 'ytmusic-cover ytmusic-np-cover',
                     child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
                 });
+            // As big as the popup height allows, leaving room for the rest.
+            const height = (this._listHeight ?? 560) + this._npExtraHeight;
+            const size = Math.max(120, Math.min(300, height - NOW_PLAYING_CHROME));
+            cover._baseStyle = `width: ${size}px; height: ${size}px;`;
+            cover.style = cover._baseStyle;
+            this._npCoverSlot.child = cover;
             this._flushCovers();
         }
         if (state?.duration)
@@ -1633,7 +1699,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         const label = this._playerTitle;
         label.remove_transition('translation-x');
         label.translation_x = 0;
-        if (!this.menu.isOpen)
+        // Animations on hidden actors finish at once, which would loop forever.
+        if (!this.menu.isOpen || !this._titleClip.mapped)
             return;
         const overflow = label.width - this._titleClip.width;
         if (this._titleClip.width <= 0 || overflow <= 2)
@@ -1646,7 +1713,10 @@ class YTMusicIndicator extends PanelMenu.Button {
             mode: Clutter.AnimationMode.LINEAR,
             onComplete: next,
         });
-        const loop = () => step(-overflow, () => step(0, loop));
+        const loop = () => {
+            if (this._titleClip.mapped)
+                step(-overflow, () => step(0, loop));
+        };
         loop();
     }
 
