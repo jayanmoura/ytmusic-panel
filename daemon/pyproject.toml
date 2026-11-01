@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytmusic-daemon"
-version = "1.1.0"
+version = "1.2.0"
 description = "D-Bus service exposing YouTube Music to the ytmusic-panel GNOME extension"
 requires-python = ">=3.12"
 license = {text = "GPL-2.0-or-later"}

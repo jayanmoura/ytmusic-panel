@@ -5,5 +5,5 @@
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.ytmusic-panel",
   "url": "https://github.com/jayanmoura/ytmusic-panel",
-  "version-name": "1.1"
+  "version-name": "1.2"
 }
