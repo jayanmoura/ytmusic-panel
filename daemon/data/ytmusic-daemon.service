@@ -1,0 +1,15 @@
+[Unit]
+Description=YouTube Music daemon for the ytmusic-panel GNOME extension
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.jayan.YTMusic
+ExecStart=%h/.local/share/ytmusic-daemon/venv/bin/ytmusic-daemon
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=graphical-session.target

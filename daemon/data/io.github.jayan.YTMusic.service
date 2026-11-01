@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.jayan.YTMusic
+Exec=/bin/false
+SystemdService=ytmusic-daemon.service
