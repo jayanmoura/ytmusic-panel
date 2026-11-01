@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ytmusic-daemon"
-version = "0.1.0"
+version = "1.0.0"
 description = "D-Bus service exposing YouTube Music to the ytmusic-panel GNOME extension"
 requires-python = ">=3.12"
 dependencies = ["ytmusicapi>=1.12", "yt-dlp[default]>=2026.10", "deno"]

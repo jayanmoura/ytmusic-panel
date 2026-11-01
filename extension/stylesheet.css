@@ -191,3 +191,29 @@
 .ytmusic-row-add:focus {
   color: #fff;
 }
+
+.ytmusic-cover {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.08);
+  background-size: cover;
+}
+
+.ytmusic-player-cover {
+  width: 44px;
+  height: 44px;
+}
+
+.ytmusic-cover-placeholder {
+  icon-size: 16px;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.ytmusic-row-content {
+  spacing: 10px;
+}
+
+.ytmusic-track-row {
+  spacing: 8px;
+}

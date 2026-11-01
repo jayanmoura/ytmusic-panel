@@ -30,6 +30,9 @@ const IFACE_XML = `
       <arg type="s" direction="in"/><arg type="s" direction="in"/>
       <arg type="s" direction="out"/>
     </method>
+    <method name="GetCovers">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
     <method name="TogglePause"><arg type="s" direction="out"/></method>
     <method name="Next"><arg type="s" direction="out"/></method>
     <method name="Previous"><arg type="s" direction="out"/></method>

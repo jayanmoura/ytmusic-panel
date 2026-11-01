@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Creates the venv, installs the daemon (editable) and registers the user service.
+# Creates the venv, installs the daemon and registers the user service.
+# --dev installs it in editable mode (daemon code changes need only a restart).
 set -euo pipefail
+
+EDITABLE=()
+[ "${1:-}" = "--dev" ] && EDITABLE=(-e)
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$HOME/.local/share/ytmusic-daemon/venv"
@@ -11,7 +15,7 @@ if [ ! -x "$VENV/bin/python" ]; then
     python3 -m venv --system-site-packages "$VENV"
 fi
 "$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q --upgrade -e "$ROOT/daemon"
+"$VENV/bin/pip" install -q --upgrade "${EDITABLE[@]}" "$ROOT/daemon"
 # YouTube changes often; always pull the newest yt-dlp (and its JS solver).
 "$VENV/bin/pip" install -q --upgrade "yt-dlp[default]" deno
 

@@ -22,6 +22,7 @@ from gi.repository import Gio, GLib  # noqa: E402
 
 from . import BUS_NAME, INTERFACE, OBJECT_PATH  # noqa: E402
 from .client import AuthError, Client, DuplicateError, ServiceError, UnavailableError  # noqa: E402
+from .covers import CoverCache  # noqa: E402
 from .player import Player, PlayerError  # noqa: E402
 
 log = logging.getLogger("ytmusic-daemon")
@@ -64,6 +65,10 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="video_id" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="GetCovers">
+      <arg type="s" name="urls_json" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <method name="TogglePause">
       <arg type="s" name="json" direction="out"/>
     </method>
@@ -101,6 +106,7 @@ class Service:
         self.loop = loop
         self.client = Client()
         self.player = Player(on_change=self._on_player_change)
+        self.covers = CoverCache()
         self._playback_emit_id = 0
         self._last_playback_json = None
         # Bumped on every new queue so late background appends are dropped.
@@ -128,6 +134,7 @@ class Service:
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
             "AddToPlaylist": lambda pid, vid: ok(self._add_to_playlist(pid, vid)),
+            "GetCovers": lambda urls: ok(self._get_covers(urls)),
             "TogglePause": lambda: self._control(self.player.toggle_pause),
             "Next": lambda: self._control(self.player.next),
             "Previous": lambda: self._control(self.player.previous),
@@ -218,6 +225,7 @@ class Service:
         return ok(self.player.state())
 
     def _warm_up(self):
+        self.covers.prune()
         try:
             playlists = self.client.get_playlists()
             log.info("cache warmed: %d playlists", len(playlists))
@@ -290,6 +298,15 @@ class Service:
         self.client.add_to_playlist(playlist_id, video_id)
         return {"playlist": target["title"]}
 
+    def _get_covers(self, urls_json: str) -> dict:
+        try:
+            urls = json.loads(urls_json)
+        except ValueError:
+            raise BadRequest("Lista de capas inválida.") from None
+        if not isinstance(urls, list) or len(urls) > 200:
+            raise BadRequest("Lista de capas inválida.")
+        return self.covers.get_many(urls)
+
     def _search(self, query: str) -> list[dict]:
         if len(query) > 200:
             raise BadRequest("Busca muito longa.")
@@ -313,6 +330,7 @@ class Service:
         self._pool.shutdown(wait=False, cancel_futures=True)
         self.client.shutdown()
         self.player.shutdown()
+        self.covers.shutdown()
 
 
 def main():

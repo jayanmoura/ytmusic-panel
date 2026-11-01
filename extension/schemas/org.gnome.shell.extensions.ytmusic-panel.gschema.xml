@@ -7,5 +7,13 @@
       <default>560</default>
       <summary>Altura máxima do popup em pixels</summary>
     </key>
+    <key name="show-covers" type="b">
+      <default>true</default>
+      <summary>Mostrar capas</summary>
+    </key>
+    <key name="show-episodes-playlist" type="b">
+      <default>false</default>
+      <summary>Mostrar "Episódios para mais tarde"</summary>
+    </key>
   </schema>
 </schemalist>

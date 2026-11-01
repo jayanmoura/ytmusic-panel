@@ -13,7 +13,7 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {YTMusicClient} from './ytmusicClient.js';
 
 const LIKED_PLAYLIST_ID = 'LM';
-const HIDDEN_PLAYLIST_IDS = new Set(['SE']); // "Episódios para mais tarde"
+const EPISODES_PLAYLIST_ID = 'SE'; // "Episódios para mais tarde"
 
 // Rows are created in pages so huge playlists don't stall the shell.
 const TRACKS_PAGE_SIZE = 100;
@@ -46,8 +46,8 @@ const ERROR_TEXT = {
     ],
 };
 
-function sortPlaylists(playlists) {
-    const visible = playlists.filter(p => !HIDDEN_PLAYLIST_IDS.has(p.id));
+function sortPlaylists(playlists, showEpisodes) {
+    const visible = playlists.filter(p => showEpisodes || p.id !== EPISODES_PLAYLIST_ID);
     const liked = visible.filter(p => p.id === LIKED_PLAYLIST_ID);
     return [...liked, ...visible.filter(p => p.id !== LIKED_PLAYLIST_ID)];
 }
@@ -85,6 +85,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._results = [];
         this._searchTimeoutId = 0;
         this._viewBeforeSearch = 'playlists';
+        this._pendingCovers = []; // [url, St.Bin] waiting for _flushCovers()
         // Bumped on every navigation/load; stale async replies are dropped.
         this._serial = 0;
 
@@ -106,8 +107,11 @@ class YTMusicIndicator extends PanelMenu.Button {
         // Also subscribes to PlaybackChanged (the proxy is created on first call).
         this._refreshPlayer();
 
-        this._settingsChangedId = this._settings.connect(
-            'changed::popup-max-height', () => this._applyMaxHeight());
+        this._settingsChangedIds = [
+            this._settings.connect('changed::popup-max-height', () => this._applyMaxHeight()),
+            this._settings.connect('changed::show-episodes-playlist', () => this._onLibraryOptionsChanged()),
+            this._settings.connect('changed::show-covers', () => this._onLibraryOptionsChanged()),
+        ];
         this._applyMaxHeight();
     }
 
@@ -360,7 +364,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         return this._load(
             () => this._client.call(force ? 'RefreshPlaylists' : 'GetPlaylists'),
             data => {
-                this._playlists = sortPlaylists(data);
+                this._playlists = this._sortPlaylists(data);
                 this._renderPlaylists();
             });
     }
@@ -373,10 +377,14 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
         for (const playlist of this._playlists)
             this._list.add_child(this._createPlaylistRow(playlist));
+        this._flushCovers();
     }
 
     _createPlaylistRow(playlist, onClick = () => this._showTracks(playlist)) {
-        const row = new St.BoxLayout({x_expand: true});
+        const row = new St.BoxLayout({x_expand: true, style_class: 'ytmusic-row-content'});
+        const cover = this._cover(playlist.thumbnail);
+        if (cover)
+            row.add_child(cover);
 
         row.add_child(ellipsized(new St.Label({
             text: playlist.title,
@@ -478,6 +486,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         for (let i = this._renderedTracks; i < end; i++)
             this._list.add_child(this._createTrackRow(this._tracks[i], () => this._playFrom(i)));
         this._renderedTracks = end;
+        this._flushCovers();
         this._updateMoreButton();
     }
 
@@ -521,6 +530,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         playButton.reactive = track.available;
         playButton.can_focus = track.available;
         row.add_child(playButton);
+        const cover = this._cover(track.thumbnail);
+        if (cover)
+            row.add_child(cover);
 
         const text = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -580,7 +592,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (!this._playlists) {
             this._setPickerMessage('Carregando playlists…');
             try {
-                this._playlists = sortPlaylists(await this._client.call('GetPlaylists'));
+                this._playlists = this._sortPlaylists(await this._client.call('GetPlaylists'));
             } catch (e) {
                 if (e.code !== 'cancelled' && this._pickerTrack === track)
                     this._setPickerMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
@@ -635,6 +647,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             const row = this._createPlaylistRow(playlist, () => this._addToPlaylist(track, playlist));
             this._pickerList.add_child(row);
         }
+        this._flushCovers();
     }
 
     async _addToPlaylist(track, playlist) {
@@ -739,6 +752,90 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
         for (const track of this._results)
             this._list.add_child(this._createTrackRow(track, () => this._play('PlayTrack', track.videoId)));
+        this._flushCovers();
+    }
+
+    // -- covers ----------------------------------------------------------------
+
+    _sortPlaylists(data) {
+        this._allPlaylists = data;
+        return sortPlaylists(data, this._settings.get_boolean('show-episodes-playlist'));
+    }
+
+    _onLibraryOptionsChanged() {
+        if (this._allPlaylists)
+            this._playlists = this._sortPlaylists(this._allPlaylists);
+        this._playerCoverUrl = undefined;
+        this._updatePlayer(this._playback);
+        if (this._pickerTrack)
+            this._renderPicker(this._pickerTrack);
+        else if (this._view === 'playlists' && this._playlists)
+            this._renderPlaylists();
+        else if (this._view === 'tracks' && this._tracks.length)
+            this._renderTracks();
+        else if (this._view === 'search' && this._results.length)
+            this._renderResults();
+    }
+
+    // Square cover with a placeholder; the image is filled in by _flushCovers().
+    _cover(url, styleClass = 'ytmusic-cover') {
+        if (!this._settings.get_boolean('show-covers'))
+            return null;
+        const bin = new St.Bin({
+            style_class: styleClass,
+            y_align: Clutter.ActorAlign.CENTER,
+            child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
+        });
+        if (url) {
+            this._pendingCovers.push([url, bin]);
+            bin.connect('destroy', () => {
+                bin._destroyed = true;
+            });
+        }
+        return bin;
+    }
+
+    // Asks the daemon for local copies of the covers queued since the last call.
+    async _flushCovers() {
+        const pending = this._pendingCovers;
+        this._pendingCovers = [];
+        if (pending.length === 0)
+            return;
+        const urls = [...new Set(pending.map(([url]) => url))];
+        for (let i = 0; i < urls.length; i += 200) {
+            let paths;
+            try {
+                paths = await this._client.call('GetCovers', JSON.stringify(urls.slice(i, i + 200)));
+            } catch (e) {
+                if (!e.code)
+                    console.error(e, '[ytmusic-panel] cover loading failed');
+                else if (e.code !== 'cancelled')
+                    console.warn(`[ytmusic-panel] covers unavailable: ${e.code}`);
+                return;
+            }
+            if (!this._client)
+                return;
+            for (const [url, bin] of pending) {
+                const path = paths[url];
+                if (path && !bin._destroyed)
+                    this._setCoverImage(bin, path);
+            }
+        }
+    }
+
+    _setCoverImage(bin, path) {
+        bin.child = null;
+        const uri = GLib.filename_to_uri(path, null);
+        bin.style = `background-image: url("${uri}");`;
+    }
+
+    _updatePlayerCover(url, active) {
+        if (url === this._playerCoverUrl)
+            return;
+        this._playerCoverUrl = url;
+        this._playerCoverSlot.child?.destroy();
+        this._playerCoverSlot.child = active ? this._cover(url, 'ytmusic-cover ytmusic-player-cover') : null;
+        this._flushCovers();
     }
 
     // -- mini player -----------------------------------------------------------
@@ -749,6 +846,10 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         const player = new St.BoxLayout({style_class: 'ytmusic-player', x_expand: true});
         section.actor.add_child(player);
+
+        this._playerCoverSlot = new St.Bin({y_align: Clutter.ActorAlign.CENTER});
+        this._playerCoverUrl = undefined;
+        player.add_child(this._playerCoverSlot);
 
         const info = new St.BoxLayout({
             orientation: Clutter.Orientation.VERTICAL,
@@ -826,6 +927,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
 
         this._highlightPlayingRow(active ? track?.videoId : null);
+        this._updatePlayerCover(active ? track?.thumbnail ?? null : null, active);
     }
 
     _highlightPlayingRow(videoId) {
@@ -874,10 +976,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         }
         this._client?.destroy();
         this._client = null;
-        if (this._settingsChangedId) {
-            this._settings.disconnect(this._settingsChangedId);
-            this._settingsChangedId = 0;
-        }
+        for (const id of this._settingsChangedIds)
+            this._settings.disconnect(id);
+        this._settingsChangedIds = [];
         this._settings = null;
         super.destroy();
     }
