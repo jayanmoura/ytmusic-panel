@@ -1,0 +1,14 @@
+{
+  "name": "ytmusic-panel",
+  "private": true,
+  "description": "Lint da extensão GNOME Shell (eslint). Não é um pacote npm.",
+  "license": "GPL-2.0-or-later",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint extension"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "eslint": "^9"
+  }
+}

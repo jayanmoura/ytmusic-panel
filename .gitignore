@@ -5,3 +5,4 @@ __pycache__/
 daemon/*.egg-info/
 daemon/build/
 .dev/
+node_modules/
