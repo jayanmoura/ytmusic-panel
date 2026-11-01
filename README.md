@@ -8,7 +8,11 @@
 
 An unofficial YouTube Music player for the GNOME Shell top bar.
 
-<!-- Demo: docs/demo.gif goes here (recorded in step 5). -->
+<p align="center">
+  <img src="docs/screenshot-playlists.png" width="320" alt="Popup with the search field, the playlist list and the mini player">
+  &nbsp;
+  <img src="docs/screenshot-playlist.png" width="320" alt="Inside a playlist: search filter, songs and the mini player">
+</p>
 
 > **Disclaimer:** this is an independent, unofficial project. It is not affiliated with, endorsed by or connected to Google or YouTube. "YouTube" and "YouTube Music" are trademarks of Google LLC. The project talks to YouTube Music's internal API through [ytmusicapi](https://github.com/sigma67/ytmusicapi) and [yt-dlp](https://github.com/yt-dlp/yt-dlp), and Google can change or block that access at any time. Use it at your own risk.
 

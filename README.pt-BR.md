@@ -8,7 +8,11 @@
 
 Player não oficial do YouTube Music para o painel do GNOME Shell.
 
-<!-- Demonstração: docs/demo.gif entra aqui (gravação da Etapa 5). -->
+<p align="center">
+  <img src="docs/screenshot-playlists.png" width="320" alt="Popup com a busca, a lista de playlists e o mini player">
+  &nbsp;
+  <img src="docs/screenshot-playlist.png" width="320" alt="Dentro de uma playlist: filtro de busca, músicas e o mini player">
+</p>
 
 > **Aviso:** projeto independente e não oficial, sem nenhuma ligação com o Google ou o YouTube, nem endossado por eles. "YouTube" e "YouTube Music" são marcas do Google LLC. O projeto usa a API interna do YouTube Music por meio do [ytmusicapi](https://github.com/sigma67/ytmusicapi) e do [yt-dlp](https://github.com/yt-dlp/yt-dlp); o Google pode mudar ou bloquear esse acesso a qualquer momento. Use por sua conta e risco.
 
