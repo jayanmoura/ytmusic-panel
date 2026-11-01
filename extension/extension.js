@@ -9,17 +9,18 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {
-    ERROR_TEXT, FILTER_DEBOUNCE_MS, LIKED_PLAYLIST_ID, NOW_PLAYING, NOW_PLAYING_CHROME,
-    PROGRESS_SYNC_MS, PROGRESS_TICK_MS, SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS, TRACKS_PAGE_SIZE,
-} from './constants.js';
-import {formatTime, largeCover, normalize, numberFormat, sortPlaylists, trackCountText} from './util.js';
+import {ERROR_TEXT, NOW_PLAYING, NOW_PLAYING_CHROME, PROGRESS_SYNC_MS, PROGRESS_TICK_MS} from './constants.js';
+import {formatTime, largeCover, sortPlaylists} from './util.js';
 import {CoverLoader} from './covers.js';
 import {YTMusicClient} from './ytmusicClient.js';
 import {ClipBox, ellipsized, iconButton, setToggled} from './widgets/common.js';
 import {FloatMenu} from './widgets/floatMenu.js';
 import {Toast} from './widgets/toast.js';
 import {TrackRowFactory} from './widgets/trackRow.js';
+import {PickerView} from './views/pickerView.js';
+import {PlaylistsView} from './views/playlistsView.js';
+import {SearchView} from './views/searchView.js';
+import {TracksView} from './views/tracksView.js';
 
 const YTMusicIndicator = GObject.registerClass(
 class YTMusicIndicator extends PanelMenu.Button {
@@ -36,24 +37,11 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._view = 'playlists';
         this._playlists = null;
         this._playlist = null; // playlist shown in the tracks view
-        this._tracks = [];
-        this._renderedTracks = 0;
-        this._moreButton = null;
-        this._query = '';
-        this._results = [];
-        this._searchTimeoutId = 0;
-        this._viewBeforeSearch = 'playlists';
-        this._trackFilter = '';
-        this._oldestFirst = false;
-        this._tracksComplete = false;
-        this._shownTracks = []; // indices into _tracks that pass the filter, in display order
-        this._filterTimeoutId = 0;
         this._settingSearchText = false;
         this._overlayActor = null; // what the overlay shows: picker list or expanded player
         this._controlSets = []; // mini player and expanded player buttons
         this._npExtraHeight = 0; // mini player height, given to the expanded player
         this._progressTimeoutId = 0;
-        this._restoreScrollIdleId = 0;
         // Set by destroy(); async replies that land later must not touch actors.
         this._destroyed = false;
         this._progressBase = {position: 0, at: 0, duration: null};
@@ -62,6 +50,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._serial = 0;
         this._covers = new CoverLoader(this);
         this._trackRows = new TrackRowFactory(this);
+        this._playlistsView = new PlaylistsView(this);
+        this._tracksView = new TracksView(this);
+        this._searchView = new SearchView(this);
+        this._picker = new PickerView(this);
 
         this.add_child(new St.Icon({
             gicon: this._icon('ytmusic-symbolic'),
@@ -86,7 +78,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             if (this._overlayActor === this._nowPlaying)
                 this._startProgress();
             if (this._view === 'playlists')
-                this._loadPlaylists(false);
+                this._playlistsView.load(false);
         });
         // Also subscribes to PlaybackChanged (the proxy is created on first call).
         this._refreshPlayer();
@@ -184,7 +176,7 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         // Tracks view only: newest first (the playlist's order) or oldest first.
         this._sortButton = iconButton('view-sort-descending-symbolic', '',
-            () => this._toggleOldestFirst());
+            () => this._tracksView.toggleOldestFirst());
         this._sortButton.visible = false;
         titleRow.add_child(this._sortButton);
 
@@ -211,22 +203,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._scroll.set_child(this._list);
         box.add_child(this._scroll);
 
-        // "Add to playlist" picker. It sits on top of the current view (which
-        // is only hidden) so going back keeps that view's rows and scroll.
-        this._pickerScroll = new St.ScrollView({
-            style_class: 'ytmusic-scroll',
-            hscrollbar_policy: St.PolicyType.NEVER,
-            vscrollbar_policy: St.PolicyType.AUTOMATIC,
-            overlay_scrollbars: true,
-            x_expand: true,
-            visible: false,
-        });
-        this._pickerList = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            x_expand: true,
-        });
-        this._pickerScroll.set_child(this._pickerList);
-        box.add_child(this._pickerScroll);
+        // "Add to playlist" picker, shown over the current view.
+        box.add_child(this._picker.scroll);
         this._buildNowPlaying(box);
         this._pickerTrack = null;
         this._savedHeader = null;
@@ -253,7 +231,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _setListHeight(min, max) {
-        for (const scroll of [this._scroll, this._pickerScroll])
+        for (const scroll of [this._scroll, this._picker.scroll])
             scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
         // The expanded player also takes the space of the mini player it hides.
         const extra = this._npExtraHeight;
@@ -334,11 +312,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     // A track was removed through the floating menu.
     _onTrackRemoved(track, playlist) {
         this._playlists = null; // counts changed; reload on next visit
-        if (this._view === 'tracks' && this._playlist === playlist) {
-            this._tracks = this._tracks.filter(t => t.videoId !== track.videoId);
-            this._updateTracksSubtitle({complete: true, tracks: this._tracks});
-            this._rerenderTracksKeepingScroll();
-        }
+        this._tracksView.onTrackRemoved(track, playlist);
         this._showToast('Removida da playlist');
     }
 
@@ -350,14 +324,14 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (this._view === 'search')
             this._searchEntry.set_text(''); // _onSearchChanged leaves the search view
         else
-            this._showPlaylists();
+            this._playlistsView.show();
     }
 
     _clearList() {
         this._float.close();
         this._list.destroy_all_children();
         this._list.style = null;
-        this._moreButton = null;
+        this._tracksView.onListCleared();
         this._scroll.vadjustment.value = 0;
     }
 
@@ -374,9 +348,9 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (this._view === 'search')
             this._runSearchNow();
         else if (this._view === 'tracks')
-            this._loadTracks(true);
+            this._tracksView.load(true);
         else
-            this._loadPlaylists(true);
+            this._playlistsView.load(true);
     }
 
     // Shared bookkeeping for async loads: replies from superseded loads are dropped.
@@ -399,8 +373,8 @@ class YTMusicIndicator extends PanelMenu.Button {
     _onLoadError(e) {
         const hasData = {
             playlists: !!this._playlists,
-            tracks: this._tracks.length > 0,
-            search: this._results.length > 0,
+            tracks: this._tracksView.hasTracks,
+            search: this._searchView.hasResults,
         }[this._view];
         // Network hiccup with data on screen: keep showing what we have.
         if (e.code === 'network' && hasData)
@@ -434,246 +408,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._list.add_child(box);
     }
 
-    // -- playlists view --------------------------------------------------------
-
-    _showPlaylists() {
-        this._view = 'playlists';
-        this._playlist = null;
-        this._tracks = [];
-        this._trackFilter = '';
-        this._setSearchText('');
-        this._setSearchMode(false);
-        this._sortButton.visible = false;
-        this._setHeader('Playlists');
-        if (this._playlists)
-            this._renderPlaylists();
-        this._loadPlaylists(false);
-    }
-
-    _loadPlaylists(force) {
-        if (!this._playlists)
-            this._showMessage('Carregando playlists…');
-        return this._load(
-            () => this._client.call(force ? 'RefreshPlaylists' : 'GetPlaylists'),
-            data => {
-                this._playlists = this._sortPlaylists(data);
-                this._renderPlaylists();
-            });
-    }
-
-    _renderPlaylists() {
-        this._clearList();
-        if (this._playlists.length === 0) {
-            this._showMessage('Nenhuma playlist encontrada.');
-            return;
-        }
-        for (const playlist of this._playlists)
-            this._list.add_child(this._createPlaylistRow(playlist));
-        this._covers.flush();
-    }
-
-    _createPlaylistRow(playlist, onClick = () => this._showTracks(playlist)) {
-        const row = new St.BoxLayout({x_expand: true, style_class: 'ytmusic-row-content'});
-        const cover = this._covers.cover(playlist.thumbnail);
-        if (cover)
-            row.add_child(cover);
-
-        row.add_child(ellipsized(new St.Label({
-            text: playlist.title,
-            style_class: 'ytmusic-row-title',
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        })));
-
-        if (playlist.id === LIKED_PLAYLIST_ID) {
-            row.add_child(new St.Icon({
-                gicon: this._icon('heart-symbolic'),
-                icon_size: 14,
-                style_class: 'ytmusic-row-heart',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        } else if (playlist.count !== null && playlist.count !== undefined) {
-            row.add_child(new St.Label({
-                text: trackCountText(playlist.count),
-                style_class: 'ytmusic-row-detail',
-                y_align: Clutter.ActorAlign.CENTER,
-            }));
-        }
-
-        const button = new St.Button({
-            style_class: 'ytmusic-row',
-            child: row,
-            can_focus: true,
-            x_expand: true,
-            accessible_name: playlist.title,
-        });
-        button.connect('clicked', onClick);
-        return button;
-    }
-
-    // -- tracks view -----------------------------------------------------------
-
-    _showTracks(playlist) {
-        this._view = 'tracks';
-        this._playlist = playlist;
-        this._tracks = [];
-        this._trackFilter = '';
-        this._setSearchText('');
-        this._setSearchMode(true);
-        this._oldestFirst = false;
-        this._tracksComplete = false;
-        this._updateSortButton();
-        this._sortButton.visible = true;
-        this._setHeader(playlist.title, null, true);
-        this._showLoading('Carregando músicas…');
-        this._loadTracks(false);
-    }
-
-    _loadTracks(force) {
-        const playlist = this._playlist;
-        const method = force ? 'RefreshPlaylistTracks' : 'GetPlaylistTracks';
-        return this._load(
-            () => this._client.call(method, playlist.id),
-            (data, serial) => {
-                this._tracks = data.tracks;
-                this._tracksComplete = data.complete;
-                this._updateSortButton();
-                this._updateTracksSubtitle(data);
-                this._renderTracks();
-                if (!data.complete)
-                    this._loadRemainingTracks(playlist, serial);
-            });
-    }
-
-    // The daemon served the first page; a second call waits for the full list.
-    async _loadRemainingTracks(playlist, serial) {
-        try {
-            const data = await this._client.call('GetPlaylistTracks', playlist.id);
-            if (serial !== this._serial)
-                return;
-            this._tracks = data.tracks;
-            this._tracksComplete = data.complete;
-            this._updateSortButton();
-            this._updateTracksSubtitle(data);
-            if (this._trackFilter)
-                this._renderTracks(); // more matches may have arrived
-            else
-                this._updateShownTracks();
-            this._updateMoreButton();
-        } catch (e) {
-            // The first page is already on screen; just note it.
-            if (e.code !== 'cancelled')
-                console.warn(`[ytmusic-panel] full playlist load failed: ${e.code}`);
-        }
-    }
-
-    _updateTracksSubtitle(data) {
-        const count = data.complete ? data.tracks.length : data.count;
-        this._subtitle.text = count !== null && count !== undefined ? trackCountText(count) : '';
-        this._subtitle.visible = !!this._subtitle.text;
-    }
-
-    _updateShownTracks() {
-        const filter = normalize(this._trackFilter.trim());
-        this._shownTracks = [];
-        this._tracks.forEach((t, i) => {
-            if (!filter || normalize(`${t.title} ${t.artists} ${t.album ?? ''}`).includes(filter))
-                this._shownTracks.push(i);
-        });
-        if (this._oldestFirst)
-            this._shownTracks.reverse();
-    }
-
-    _renderTracks() {
-        this._clearList();
-        this._renderedTracks = 0;
-        this._updateShownTracks();
-        if (this._tracks.length === 0) {
-            this._showMessage('Esta playlist está vazia.');
-            return;
-        }
-        if (this._shownTracks.length === 0) {
-            this._showMessage('Nenhuma música encontrada nesta playlist.', 'Tente outras palavras.');
-            return;
-        }
-        this._renderMoreTracks();
-    }
-
-    _renderMoreTracks() {
-        this._moreButton?.destroy();
-        this._moreButton = null;
-
-        const end = Math.min(this._renderedTracks + TRACKS_PAGE_SIZE, this._shownTracks.length);
-        for (let n = this._renderedTracks; n < end; n++) {
-            const i = this._shownTracks[n];
-            this._list.add_child(this._trackRows.create(this._tracks[i], () => this._playFrom(i), true));
-        }
-        this._renderedTracks = end;
-        this._covers.flush();
-        this._updateMoreButton();
-    }
-
-    // Re-render after a change to _tracks without jumping back to the top.
-    _toggleOldestFirst() {
-        if (!this._tracksComplete)
-            return;
-        this._oldestFirst = !this._oldestFirst;
-        this._updateSortButton();
-        this._renderTracks();
-    }
-
-    // Reversing only makes sense with the whole list, so it waits for it.
-    _updateSortButton() {
-        const button = this._sortButton;
-        button.child.icon_name = this._oldestFirst
-            ? 'view-sort-ascending-symbolic' : 'view-sort-descending-symbolic';
-        button.accessible_name = this._oldestFirst
-            ? 'Mostrando as mais antigas primeiro' : 'Mostrando as mais recentes primeiro';
-        setToggled(button, this._oldestFirst);
-        button.reactive = this._tracksComplete;
-        button.can_focus = this._tracksComplete;
-    }
-
-    _rerenderTracksKeepingScroll() {
-        const scroll = this._scroll.vadjustment.value;
-        const rendered = this._renderedTracks;
-        this._renderTracks();
-        while (this._renderedTracks < Math.min(rendered, this._shownTracks.length) &&
-               this._renderedTracks > 0)
-            this._renderMoreTracks();
-        if (this._restoreScrollIdleId)
-            GLib.source_remove(this._restoreScrollIdleId);
-        this._restoreScrollIdleId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
-            this._restoreScrollIdleId = 0;
-            this._scroll.vadjustment.value = scroll;
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    _updateMoreButton() {
-        const remaining = this._shownTracks.length - this._renderedTracks;
-        if (this._renderedTracks === 0 || remaining <= 0) {
-            this._moreButton?.destroy();
-            this._moreButton = null;
-            return;
-        }
-        const label = `Mostrar mais (${numberFormat.format(remaining)} restantes)`;
-        if (this._moreButton) {
-            this._moreButton.label = label;
-            return;
-        }
-        this._moreButton = new St.Button({
-            style_class: 'ytmusic-more-button',
-            label,
-            can_focus: true,
-            x_align: Clutter.ActorAlign.CENTER,
-        });
-        this._moreButton.connect('clicked', () => this._renderMoreTracks());
-        this._list.add_child(this._moreButton);
-    }
-
     // Covers the current view with the picker/actions list.
-    _enterOverlay(track, title, subtitle, actor = this._pickerScroll) {
+    _enterOverlay(track, title, subtitle, actor = this._picker.scroll) {
         if (!this._pickerTrack) {
             this._savedHeader = {
                 title: this._title.text,
@@ -691,38 +427,16 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._overlayActor.visible = false;
         this._overlayActor = actor;
         actor.visible = true;
-        if (actor === this._pickerScroll)
-            this._pickerScroll.vadjustment.value = 0;
-    }
-
-    // -- add to playlist --------------------------------------------------------
-
-    async _openPicker(track) {
-        if (!track.videoId)
-            return;
-        this._enterOverlay(track, 'Adicionar a playlist', track.title);
-
-        if (!this._playlists) {
-            this._setPickerMessage('Carregando playlists…');
-            try {
-                this._playlists = this._sortPlaylists(await this._client.call('GetPlaylists'));
-            } catch (e) {
-                if (e.code !== 'cancelled' && !this._destroyed && this._pickerTrack === track)
-                    this._setPickerMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
-                return;
-            }
-            if (this._destroyed || this._pickerTrack !== track)
-                return;
-        }
-        this._renderPicker(track);
+        if (actor === this._picker.scroll)
+            this._picker.scroll.vadjustment.value = 0;
     }
 
     _closePicker() {
         if (!this._pickerTrack)
             return;
         this._pickerTrack = null;
-        this._pickerList.destroy_all_children();
-        this._pickerScroll.visible = false;
+        this._picker.clear();
+        this._picker.scroll.visible = false;
         if (this._overlayActor === this._nowPlaying) {
             this._playerSection.actor.show();
             this._playerSeparator.actor.show();
@@ -743,67 +457,6 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._savedHeader = null;
     }
 
-    _setPickerMessage(title, hint = null) {
-        this._pickerList.destroy_all_children();
-        const box = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'ytmusic-message',
-            x_expand: true,
-        });
-        box.add_child(new St.Label({text: title, style_class: 'ytmusic-message-title'}));
-        if (hint) {
-            const label = new St.Label({text: hint, style_class: 'ytmusic-message-hint'});
-            label.clutter_text.line_wrap = true;
-            box.add_child(label);
-        }
-        this._pickerList.add_child(box);
-    }
-
-    _renderPicker(track) {
-        this._pickerList.destroy_all_children();
-        // Only playlists the user can edit; skip the one being browsed.
-        const current = this._view === 'tracks' ? this._playlist?.id : null;
-        const targets = this._playlists.filter(p =>
-            (p.owned || p.id === LIKED_PLAYLIST_ID) && p.id !== current);
-        if (targets.length === 0) {
-            this._setPickerMessage('Nenhuma playlist sua disponível.');
-            return;
-        }
-        for (const playlist of targets) {
-            const row = this._createPlaylistRow(playlist, () => this._addToPlaylist(track, playlist));
-            this._pickerList.add_child(row);
-        }
-        this._covers.flush();
-    }
-
-    async _addToPlaylist(track, playlist) {
-        // Block double clicks while the request runs.
-        for (const row of this._pickerList.get_children())
-            row.reactive = false;
-        try {
-            await this._client.call('AddToPlaylist', playlist.id, track.videoId);
-            if (this._destroyed)
-                return;
-            const where = playlist.id === LIKED_PLAYLIST_ID ? 'Músicas que gostei' : playlist.title;
-            Main.notify('YouTube Music', `"${track.title}" adicionada a ${where}.`);
-            if (this._pickerTrack === track) {
-                this._playlists = null; // counts changed; reload on next visit
-                this._closePicker();
-            }
-        } catch (e) {
-            if (e.code === 'cancelled' || this._destroyed)
-                return;
-            const message = e.code === 'duplicate' || e.code === 'bad_request'
-                ? e.message
-                : (ERROR_TEXT[e.code] ?? ERROR_TEXT.internal)[0];
-            Main.notify('YouTube Music', message);
-            if (this._pickerTrack === track) {
-                for (const row of this._pickerList.get_children())
-                    row.reactive = true;
-            }
-        }
-    }
-
     // -- search ----------------------------------------------------------------
 
     _onSearchChanged() {
@@ -813,96 +466,16 @@ class YTMusicIndicator extends PanelMenu.Button {
         const text = this._searchEntry.get_text();
         this._searchEntry.secondary_icon = text ? this._clearSearchIcon : null;
 
-        if (this._view === 'tracks') {
-            this._scheduleFilter(text);
-            return;
-        }
-
-        if (this._searchTimeoutId) {
-            GLib.source_remove(this._searchTimeoutId);
-            this._searchTimeoutId = 0;
-        }
-
-        const query = text.trim();
-        if (!query) {
-            this._leaveSearch();
-            return;
-        }
-        if (query.length < SEARCH_MIN_CHARS)
-            return;
-        this._searchTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SEARCH_DEBOUNCE_MS, () => {
-            this._searchTimeoutId = 0;
-            this._search(query);
-            return GLib.SOURCE_REMOVE;
-        });
-    }
-
-    _scheduleFilter(text) {
-        if (this._filterTimeoutId)
-            GLib.source_remove(this._filterTimeoutId);
-        this._filterTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, FILTER_DEBOUNCE_MS, () => {
-            this._filterTimeoutId = 0;
-            if (this._view === 'tracks' && this._tracks.length > 0) {
-                this._trackFilter = text;
-                this._renderTracks();
-            }
-            return GLib.SOURCE_REMOVE;
-        });
+        if (this._view === 'tracks')
+            this._tracksView.scheduleFilter(text);
+        else
+            this._searchView.onTextChanged(text);
     }
 
     _runSearchNow() {
         if (this._view === 'tracks')
             return; // the filter already follows each keystroke
-        if (this._searchTimeoutId) {
-            GLib.source_remove(this._searchTimeoutId);
-            this._searchTimeoutId = 0;
-        }
-        const query = this._searchEntry.get_text().trim();
-        if (query)
-            this._search(query);
-    }
-
-    _search(query) {
-        if (this._view !== 'search') {
-            // Remember where to go back to.
-            this._viewBeforeSearch = this._view;
-            this._view = 'search';
-        }
-        this._query = query;
-        this._results = [];
-        this._setHeader('Resultados', `"${query}"`, true);
-        this._showLoading('Buscando…');
-        return this._load(
-            () => this._client.call('Search', query),
-            data => {
-                this._results = data;
-                this._renderResults();
-            });
-    }
-
-    _leaveSearch() {
-        if (this._view !== 'search')
-            return;
-        this._serial++; // drop any in-flight search reply
-        this._query = '';
-        this._results = [];
-        if (this._viewBeforeSearch === 'tracks' && this._playlist) {
-            this._showTracks(this._playlist);
-        } else {
-            this._view = 'playlists';
-            this._showPlaylists();
-        }
-    }
-
-    _renderResults() {
-        this._clearList();
-        if (this._results.length === 0) {
-            this._showMessage('Nenhuma música encontrada.', 'Tente outras palavras.');
-            return;
-        }
-        for (const track of this._results)
-            this._list.add_child(this._trackRows.create(track, () => this._play('PlayTrack', track.videoId)));
-        this._covers.flush();
+        this._searchView.runNow();
     }
 
     // -- covers ----------------------------------------------------------------
@@ -918,13 +491,13 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._playerCoverUrl = undefined;
         this._updatePlayer(this._playback);
         if (this._pickerTrack)
-            this._renderPicker(this._pickerTrack);
+            this._picker.render(this._pickerTrack);
         else if (this._view === 'playlists' && this._playlists)
-            this._renderPlaylists();
-        else if (this._view === 'tracks' && this._tracks.length)
-            this._renderTracks();
-        else if (this._view === 'search' && this._results.length)
-            this._renderResults();
+            this._playlistsView.render();
+        else if (this._view === 'tracks' && this._tracksView.hasTracks)
+            this._tracksView.render();
+        else if (this._view === 'search' && this._searchView.hasResults)
+            this._searchView.render();
     }
 
     // Square cover with a placeholder; the image is filled in by _flushCovers().
@@ -1360,12 +933,6 @@ class YTMusicIndicator extends PanelMenu.Button {
 
     // -- playback --------------------------------------------------------------
 
-    _playFrom(index) {
-        if (!this._playlist)
-            return;
-        this._play('PlayPlaylist', this._playlist.id, index, this._oldestFirst);
-    }
-
     async _play(method, ...args) {
         try {
             await this._client.call(method, ...args);
@@ -1381,13 +948,14 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._destroyed = true;
         this._serial++;
         this._playerTitle.remove_transition('translation-x');
-        for (const id of ['_searchTimeoutId', '_filterTimeoutId', '_progressTimeoutId',
-            '_restoreScrollIdleId']) {
-            if (this[id]) {
-                GLib.source_remove(this[id]);
-                this[id] = 0;
-            }
+        if (this._progressTimeoutId) {
+            GLib.source_remove(this._progressTimeoutId);
+            this._progressTimeoutId = 0;
         }
+        this._playlistsView.destroy();
+        this._tracksView.destroy();
+        this._searchView.destroy();
+        this._picker.destroy();
         this._toast.destroy();
         this._trackRows.destroy();
         this._float.destroy();

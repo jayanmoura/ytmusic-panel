@@ -72,7 +72,7 @@ export class TrackRowFactory {
             ? iconButton('view-more-symbolic', 'Mais opções',
                 button => indicator._float.open(track, button))
             : iconButton('list-add-symbolic', 'Adicionar a uma playlist',
-                () => indicator._openPicker(track));
+                () => indicator._picker.open(track));
         actionButton.add_style_class_name('ytmusic-row-add');
         actionButton.reactive = track.available;
         actionButton.can_focus = track.available;

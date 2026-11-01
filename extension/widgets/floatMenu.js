@@ -57,7 +57,7 @@ export class FloatMenu {
             ['media-skip-forward-symbolic', 'Tocar a seguir', () => this._enqueue(track, 'PlayNext')],
             ['folder-new-symbolic', 'Adicionar a outra playlist', () => {
                 this.close();
-                indicator._openPicker(track);
+                indicator._picker.open(track);
             }],
             ['edit-copy-symbolic', 'Compartilhar (copiar link)', () => this._share(track)],
         ];
