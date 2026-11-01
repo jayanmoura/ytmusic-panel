@@ -20,3 +20,10 @@ packages = ["ytmusic_daemon"]
 
 [tool.setuptools.package-data]
 ytmusic_daemon = ["preload.lua"]
+
+[project.optional-dependencies]
+# Development only: pip install -e "daemon[dev]" (inside the venv).
+dev = ["pytest", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
