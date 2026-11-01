@@ -69,6 +69,9 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="urls_json" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="GetAccount">
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <method name="TogglePause">
       <arg type="s" name="json" direction="out"/>
     </method>
@@ -131,6 +134,7 @@ class Service:
             "RefreshPlaylistTracks": lambda pid: ok(
                 self.client.get_playlist_tracks(pid, force=True)),
             "Search": lambda q: ok(self._search(q)),
+            "GetAccount": lambda: ok(self._get_account()),
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
             "AddToPlaylist": lambda pid, vid: ok(self._add_to_playlist(pid, vid)),
@@ -306,6 +310,13 @@ class Service:
         if not isinstance(urls, list) or len(urls) > 200:
             raise BadRequest("Lista de capas inválida.")
         return self.covers.get_many(urls)
+
+    def _get_account(self) -> dict:
+        account = dict(self.client.get_account())
+        # Local cached file, so the preferences window never touches the network.
+        url = account.pop("photo")
+        account["photo_path"] = self.covers.get_many([url]).get(url) if url else None
+        return account
 
     def _search(self, query: str) -> list[dict]:
         if len(query) > 200:

@@ -82,9 +82,13 @@ Clique no ícone no painel.
 gnome-extensions prefs ytmusic-panel@jayan
 ```
 
-- Altura máxima do popup
-- Mostrar capas
-- Mostrar "Episódios para mais tarde" (lista de podcasts salvos; escondida por padrão)
+A janela mostra a sua conta (foto, nome e @) no topo e, abaixo, as seções:
+
+- **Aparência**: tema do popup (automático, claro ou escuro), altura do popup (fixa; se não couber na tela, diminui sozinha) e mostrar capas
+- **Biblioteca**: mostrar "Episódios para mais tarde" (lista de podcasts salvos; escondida por padrão)
+- **Conta e serviço**: comandos de login e de logs
+
+A engrenagem ao lado da busca, no popup, abre a mesma janela.
 
 ## Logs e diagnóstico
 

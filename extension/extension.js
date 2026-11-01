@@ -101,6 +101,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             if (!open)
                 return;
             this._refreshPlayer();
+            this._fitHeight();
             if (this._view === 'playlists')
                 this._loadPlaylists(false);
         });
@@ -108,11 +109,20 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._refreshPlayer();
 
         this._settingsChangedIds = [
-            this._settings.connect('changed::popup-max-height', () => this._applyMaxHeight()),
+            this._settings.connect('changed::popup-height', () => this._applyHeight()),
+            this._settings.connect('changed::popup-theme', () => this._applyTheme()),
             this._settings.connect('changed::show-episodes-playlist', () => this._onLibraryOptionsChanged()),
             this._settings.connect('changed::show-covers', () => this._onLibraryOptionsChanged()),
         ];
-        this._applyMaxHeight();
+        this._applyHeight();
+
+        // The shell switches its own light/dark stylesheet on these.
+        const stSettings = St.Settings.get();
+        this._stSettingsIds = [
+            stSettings.connect('notify::color-scheme', () => this._applyTheme()),
+            stSettings.connect('notify::shell-color-scheme', () => this._applyTheme()),
+        ];
+        this._applyTheme();
     }
 
     // Must run after the panel's PopupMenuManager registered this menu: its own
@@ -253,10 +263,52 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._buildPlayer();
     }
 
-    _applyMaxHeight() {
-        const h = this._settings.get_int('popup-max-height');
-        this._scroll.style = `max-height: ${h}px;`;
-        this._pickerScroll.style = `max-height: ${h}px;`;
+    // Fixed height, so the setting is visible even when the list is short.
+    // The shell caps the whole menu to the screen; when that happens the
+    // list must shrink instead of pushing the mini player out of view.
+    // Sizes go through CSS: setting min_height on a ScrollView directly can
+    // make its minimum exceed its natural height, which aborts the shell.
+    _applyHeight() {
+        const h = this._settings.get_int('popup-height');
+        this._setListHeight(h, h);
+        if (this.menu.isOpen)
+            this._fitHeight();
+    }
+
+    _setListHeight(min, max) {
+        for (const scroll of [this._scroll, this._pickerScroll])
+            scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
+    }
+
+    // Called with the menu open (the actors must be on the stage to measure).
+    _fitHeight() {
+        const h = this._settings.get_int('popup-height');
+        const monitor = Main.layoutManager.findIndexForActor(this);
+        const workArea = Main.layoutManager.getWorkAreaForMonitor(
+            monitor >= 0 ? monitor : Main.layoutManager.primaryIndex);
+        // Height of everything in the popup except the visible list.
+        const scroll = this._pickerTrack ? this._pickerScroll : this._scroll;
+        const [, listNat] = scroll.get_preferred_height(-1);
+        const [, menuNat] = this.menu.box.get_preferred_height(-1);
+        const chrome = menuNat - listNat;
+        // Panel menus keep a bottom margin; leave room for it and the popup border.
+        const available = Math.max(200, workArea.height - chrome - 48);
+        const target = Math.min(h, available);
+        this._setListHeight(target, target);
+    }
+
+    _applyTheme() {
+        const choice = this._settings.get_string('popup-theme');
+        const shellVariant = Main.getStyleVariant() === 'light' ? 'light' : 'dark';
+        const variant = choice === 'auto' ? shellVariant : choice;
+        const box = this.menu.box;
+        box.remove_style_class_name('ytmusic-theme-light');
+        box.remove_style_class_name('ytmusic-theme-dark');
+        box.add_style_class_name(`ytmusic-theme-${variant}`);
+        if (variant !== shellVariant)
+            box.add_style_class_name('ytmusic-theme-forced');
+        else
+            box.remove_style_class_name('ytmusic-theme-forced');
     }
 
     _setHeader(title, subtitle = null, canGoBack = false, showToolbar = canGoBack) {
@@ -1002,6 +1054,10 @@ class YTMusicIndicator extends PanelMenu.Button {
             this._settings.disconnect(id);
         this._settingsChangedIds = [];
         this._settings = null;
+        const stSettings = St.Settings.get();
+        for (const id of this._stSettingsIds)
+            stSettings.disconnect(id);
+        this._stSettingsIds = [];
         super.destroy();
     }
 });

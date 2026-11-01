@@ -2,10 +2,20 @@
 <schemalist>
   <schema id="org.gnome.shell.extensions.ytmusic-panel"
           path="/org/gnome/shell/extensions/ytmusic-panel/">
-    <key name="popup-max-height" type="i">
+    <key name="popup-height" type="i">
       <range min="300" max="1200"/>
       <default>560</default>
-      <summary>Altura máxima do popup em pixels</summary>
+      <summary>Altura da lista do popup em pixels</summary>
+      <description>Limitada ao espaço disponível na tela.</description>
+    </key>
+    <key name="popup-theme" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="light"/>
+        <choice value="dark"/>
+      </choices>
+      <default>"auto"</default>
+      <summary>Tema do popup: auto (segue o sistema), light ou dark</summary>
     </key>
     <key name="show-covers" type="b">
       <default>true</default>

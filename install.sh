@@ -52,6 +52,10 @@ fi
 # -- 3. extension --------------------------------------------------------------
 step "Instalando a extensão ($MODE)"
 if [ "$MODE" = dev ]; then
+    # A previous copy install is a plain directory of generated files.
+    if [ -d "$EXT_DIR" ] && [ ! -L "$EXT_DIR" ]; then
+        rm -r "$EXT_DIR"
+    fi
     "$ROOT/scripts/dev-link.sh"
 else
     # A previous --dev install is a symlink into this repo: remove only the

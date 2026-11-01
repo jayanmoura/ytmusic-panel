@@ -142,6 +142,17 @@ class Client:
 
         return self._cache.get_or_fetch("playlists", fetch, force=force)
 
+    def get_account(self, force: bool = False) -> dict:
+        def fetch():
+            info = self._call(lambda yt: yt.get_account_info())
+            return {
+                "name": info.get("accountName"),
+                "handle": info.get("channelHandle"),
+                "photo": info.get("accountPhotoUrl"),
+            }
+
+        return self._cache.get_or_fetch("account", fetch, force=force)
+
     def get_playlist_tracks(self, playlist_id: str, force: bool = False) -> dict:
         """Full list if cached, otherwise the first page with complete=False.
 
