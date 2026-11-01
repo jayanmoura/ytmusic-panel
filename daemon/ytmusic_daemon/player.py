@@ -8,6 +8,7 @@ our track metadata.
 import json
 import logging
 import os
+import random
 import shlex
 import socket
 import subprocess
@@ -33,6 +34,7 @@ COMMAND_TIMEOUT = 5.0
 
 OBSERVED = ["pause", "playlist-pos", "idle-active", "core-idle", "duration", "path",
             "media-title"]
+REPEAT_MODES = ("off", "all", "one")
 # "Previous" restarts the current track instead when past this point (seconds).
 RESTART_THRESHOLD = 3.0
 
@@ -68,6 +70,10 @@ class Player:
         self._next_id = 1
         self._props: dict = {}
         self.queue: list[dict] = []
+        # Queue in its original order, to undo shuffling.
+        self._original: list[dict] = []
+        self.shuffle = False
+        self.repeat = "off"
         self._queue_gen = 0
         # Tracks before the start one are inserted once it has loaded (see play()).
         self._pending_before: tuple[int, list[dict]] | None = None
@@ -102,6 +108,8 @@ class Player:
             # D-Bus name element (a space here makes the plugin hang mpv).
             "--audio-client-name=ytmusic",
             "--title=YouTube Music",
+            f"--loop-playlist={'inf' if self.repeat == 'all' else 'no'}",
+            f"--loop-file={'inf' if self.repeat == 'one' else 'no'}",
         ]
         # Debug/testing hook, e.g. YTMUSIC_MPV_EXTRA_ARGS="--ao=null".
         args += shlex.split(os.environ.get("YTMUSIC_MPV_EXTRA_ARGS", ""))
@@ -265,9 +273,17 @@ class Player:
         """
         if not tracks:
             raise PlayerError("empty queue")
+        tracks = list(tracks)
+        original = list(tracks)
+        if self.shuffle:
+            # The chosen track plays first; the rest in random order.
+            rest = tracks[:start] + tracks[start + 1:]
+            random.shuffle(rest)
+            tracks, start = [tracks[start]] + rest, 0
         with self._lock:
             self._start()
             self._queue_gen += 1
+            self._original = original
             self.queue = list(tracks)
             self._pos_offset = start
             self._starting = start
@@ -294,6 +310,9 @@ class Player:
         with self._lock:
             if not self._running():
                 return
+            self._original.extend(tracks)
+            if self.shuffle:
+                tracks = random.sample(tracks, len(tracks))
             path = self._write_list(tracks)
             self._send(["loadlist", str(path), "append"])
             self.queue.extend(tracks)
@@ -306,6 +325,7 @@ class Player:
                 return
             self._send(["loadfile", track_url(track["videoId"]), "append"])
             self.queue.append(track)
+            self._original.append(track)
         self._notify()
 
     def play_next(self, track: dict) -> None:
@@ -318,8 +338,59 @@ class Player:
             if not isinstance(pos, int) or pos < 0:
                 pos = (self._starting or 0) - self._pos_offset
             self._send(["loadfile", track_url(track["videoId"]), "insert-next"])
+            current = self.track_at(pos + self._pos_offset)
             self.queue.insert(pos + self._pos_offset + 1, track)
+            at = next((i for i, t in enumerate(self._original) if t is current), None)
+            self._original.insert(at + 1 if at is not None else len(self._original), track)
         self._notify()
+
+    # -- repeat & shuffle -----------------------------------------------------------
+
+    def cycle_repeat(self) -> None:
+        """off -> all (the queue) -> one (the current track) -> off."""
+        with self._lock:
+            self.repeat = REPEAT_MODES[(REPEAT_MODES.index(self.repeat) + 1) % len(REPEAT_MODES)]
+            if self._running():
+                self._send(["set_property", "loop-playlist",
+                            "inf" if self.repeat == "all" else "no"])
+                self._send(["set_property", "loop-file", "inf" if self.repeat == "one" else "no"])
+        self._notify()
+
+    def toggle_shuffle(self) -> None:
+        with self._lock:
+            self.shuffle = not self.shuffle
+            if self._running() and self.state()["state"] != "stopped":
+                self._reorder()
+        self._notify()
+
+    def _reorder(self) -> None:
+        """Rebuild mpv's playlist around the current track, shuffled or in the
+        original order. mpv's own shuffle would leave self.queue out of sync."""
+        index = self.state().get("index")
+        current = self.track_at(index) if index is not None else None
+        if current is None:
+            return
+        # Tracks still waiting to be inserted before the first one are in _original.
+        self._pending_before = None
+        others = list(self._original)
+        at = next((i for i, t in enumerate(others) if t is current), None)
+        if at is None:
+            at = next((i for i, t in enumerate(others) if t["videoId"] == current["videoId"]), None)
+        if at is not None:
+            del others[at]
+        if self.shuffle:
+            before, after = [], random.sample(others, len(others))
+        else:
+            split = at if at is not None else 0
+            before, after = others[:split], others[split:]
+        self._send(["playlist-clear"])  # keeps the current entry
+        if after:
+            self._send(["loadlist", str(self._write_list(after)), "append"])
+        if before:
+            self._send(["loadlist", str(self._write_list(before)), "insert-at", 0])
+        self.queue = before + [current] + after
+        self._pos_offset = 0
+        self._starting = None if self._starting is None else len(before)
 
     # -- preloaded streams ---------------------------------------------------------
 
@@ -376,15 +447,16 @@ class Player:
 
     def state(self) -> dict:
         props = self._props
+        modes = {"shuffle": self.shuffle, "repeat": self.repeat}
         if not self._running():
-            return {"state": "stopped", "index": None, "track": None}
+            return {"state": "stopped", "index": None, "track": None, **modes}
         pos = props.get("playlist-pos")
         index = pos + self._pos_offset if isinstance(pos, int) and pos >= 0 else None
         if self._starting is not None and index is None:
             index = self._starting
         idle = props.get("idle-active", True) and index is None
         if idle:
-            return {"state": "stopped", "index": None, "track": None}
+            return {"state": "stopped", "index": None, "track": None, **modes}
         track = self.queue[index] if index is not None and index < len(self.queue) else None
         # The URL is authoritative; the index can be briefly off while inserting.
         vid = video_id_from_url(props.get("path"))
@@ -404,6 +476,7 @@ class Player:
             "length": len(self.queue),
             "duration": props.get("duration"),
             "track": track,
+            **modes,
         }
 
     def shutdown(self) -> None:

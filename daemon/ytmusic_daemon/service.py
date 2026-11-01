@@ -111,6 +111,12 @@ INTROSPECTION_XML = f"""
     <method name="Previous">
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="ToggleShuffle">
+      <arg type="s" name="json" direction="out"/>
+    </method>
+    <method name="CycleRepeat">
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <signal name="PlaybackChanged">
       <arg type="s" name="json"/>
     </signal>
@@ -188,6 +194,8 @@ class Service:
             "TogglePause": lambda: self._control(self.player.toggle_pause),
             "Next": lambda: self._control(self.player.next),
             "Previous": lambda: self._control(self.player.previous),
+            "ToggleShuffle": lambda: self._control(self.player.toggle_shuffle),
+            "CycleRepeat": lambda: self._control(self.player.cycle_repeat),
         }
 
     # -- bus plumbing -----------------------------------------------------------
