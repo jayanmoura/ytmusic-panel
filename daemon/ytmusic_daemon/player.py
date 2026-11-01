@@ -479,6 +479,20 @@ class Player:
             **modes,
         }
 
+    def stop(self) -> None:
+        """Stop playback and empty the queue (mpv keeps running, idle)."""
+        with self._lock:
+            self._queue_gen += 1
+            self._pending_before = None
+            self._starting = None
+            self.queue = []
+            self._original = []
+            self._pos_offset = 0
+            self._preloads = {}
+            if self._running():
+                self._send(["stop"])
+        self._notify()
+
     def shutdown(self) -> None:
         with self._lock:
             if self._sock:

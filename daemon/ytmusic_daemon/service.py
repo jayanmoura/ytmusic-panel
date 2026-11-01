@@ -420,6 +420,9 @@ class Service:
     def _logout(self) -> None:
         browser_login.logout()
         self.client.reset()
+        with self._play_lock:
+            self._play_gen += 1  # drop pending appends of the old queue
+            self.player.stop()
         GLib.idle_add(self._emit_auth_required)
 
     def _reauth(self) -> bool:
