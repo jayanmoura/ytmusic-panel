@@ -4,3 +4,4 @@ __pycache__/
 *.zip
 daemon/*.egg-info/
 daemon/build/
+.dev/
