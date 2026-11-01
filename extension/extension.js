@@ -1,6 +1,5 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
-import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import St from 'gi://St';
 
@@ -9,11 +8,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
-import {ERROR_TEXT, NOW_PLAYING, NOW_PLAYING_CHROME, PROGRESS_SYNC_MS, PROGRESS_TICK_MS} from './constants.js';
-import {formatTime, largeCover, sortPlaylists} from './util.js';
+import {ERROR_TEXT} from './constants.js';
+import {sortPlaylists} from './util.js';
 import {CoverLoader} from './covers.js';
 import {YTMusicClient} from './ytmusicClient.js';
-import {ClipBox, ellipsized, iconButton, setToggled} from './widgets/common.js';
+import {ellipsized, iconButton} from './widgets/common.js';
 import {FloatMenu} from './widgets/floatMenu.js';
 import {Toast} from './widgets/toast.js';
 import {TrackRowFactory} from './widgets/trackRow.js';
@@ -21,6 +20,9 @@ import {PickerView} from './views/pickerView.js';
 import {PlaylistsView} from './views/playlistsView.js';
 import {SearchView} from './views/searchView.js';
 import {TracksView} from './views/tracksView.js';
+import {updateControlSet} from './player/controls.js';
+import {MiniPlayer} from './player/miniPlayer.js';
+import {NowPlaying} from './player/nowPlaying.js';
 
 const YTMusicIndicator = GObject.registerClass(
 class YTMusicIndicator extends PanelMenu.Button {
@@ -41,11 +43,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._overlayActor = null; // what the overlay shows: picker list or expanded player
         this._controlSets = []; // mini player and expanded player buttons
         this._npExtraHeight = 0; // mini player height, given to the expanded player
-        this._progressTimeoutId = 0;
         // Set by destroy(); async replies that land later must not touch actors.
         this._destroyed = false;
-        this._progressBase = {position: 0, at: 0, duration: null};
-        this._lastSync = 0;
         // Bumped on every navigation/load; stale async replies are dropped.
         this._serial = 0;
         this._covers = new CoverLoader(this);
@@ -54,6 +53,8 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._tracksView = new TracksView(this);
         this._searchView = new SearchView(this);
         this._picker = new PickerView(this);
+        this._mini = new MiniPlayer(this);
+        this._np = new NowPlaying(this);
 
         this.add_child(new St.Icon({
             gicon: this._icon('ytmusic-symbolic'),
@@ -67,16 +68,16 @@ class YTMusicIndicator extends PanelMenu.Button {
             if (this._destroyed)
                 return; // the menu closes while being destroyed
             if (!open) {
-                this._stopProgress();
+                this._np.stopProgress();
                 this._float.close();
-                this._updateMarquee(); // stops it
+                this._mini.updateMarquee(); // stops it
                 return;
             }
             this._refreshPlayer();
             this._fitHeight();
-            this._updateMarquee();
-            if (this._overlayActor === this._nowPlaying)
-                this._startProgress();
+            this._mini.updateMarquee();
+            if (this._overlayActor === this._np.actor)
+                this._np.startProgress();
             if (this._view === 'playlists')
                 this._playlistsView.load(false);
         });
@@ -205,7 +206,7 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         // "Add to playlist" picker, shown over the current view.
         box.add_child(this._picker.scroll);
-        this._buildNowPlaying(box);
+        this._np.build(box);
         this._pickerTrack = null;
         this._savedHeader = null;
 
@@ -215,7 +216,8 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         this._playerSeparator = new PopupMenu.PopupSeparatorMenuItem();
         this.menu.addMenuItem(this._playerSeparator);
-        this._buildPlayer();
+        this._mini.build();
+        this._updatePlayer(null);
     }
 
     // Fixed height, so the setting is visible even when the list is short.
@@ -235,7 +237,7 @@ class YTMusicIndicator extends PanelMenu.Button {
             scroll.style = `min-height: ${min}px; max-height: ${max}px;`;
         // The expanded player also takes the space of the mini player it hides.
         const extra = this._npExtraHeight;
-        this._nowPlaying.style = `min-height: ${min + extra}px; max-height: ${max + extra}px;`;
+        this._np.actor.style = `min-height: ${min + extra}px; max-height: ${max + extra}px;`;
         this._listHeight = min;
     }
 
@@ -437,17 +439,17 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._pickerTrack = null;
         this._picker.clear();
         this._picker.scroll.visible = false;
-        if (this._overlayActor === this._nowPlaying) {
-            this._playerSection.actor.show();
+        if (this._overlayActor === this._np.actor) {
+            this._mini.section.actor.show();
             this._playerSeparator.actor.show();
             this._npExtraHeight = 0;
             const h = this._listHeight ?? this._settings.get_int('popup-height');
             this._setListHeight(h, h);
-            this._updateMarquee();
+            this._mini.updateMarquee();
         }
-        this._nowPlaying.visible = false;
+        this._np.actor.visible = false;
         this._overlayActor = null;
-        this._stopProgress();
+        this._np.stopProgress();
         this._scroll.visible = true;
         this._refreshButton.visible = true;
         this._sortButton.visible = this._view === 'tracks';
@@ -488,7 +490,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     _onLibraryOptionsChanged() {
         if (this._allPlaylists)
             this._playlists = this._sortPlaylists(this._allPlaylists);
-        this._playerCoverUrl = undefined;
+        this._mini.forgetCover();
         this._updatePlayer(this._playback);
         if (this._pickerTrack)
             this._picker.render(this._pickerTrack);
@@ -501,81 +503,6 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     // Square cover with a placeholder; the image is filled in by _flushCovers().
-    _updatePlayerCover(url, active) {
-        if (url === this._playerCoverUrl)
-            return;
-        this._playerCoverUrl = url;
-        this._playerCoverSlot.child?.destroy();
-        this._playerCoverSlot.child = active ? this._covers.cover(url, 'ytmusic-cover ytmusic-player-cover') : null;
-        this._covers.flush();
-    }
-
-    // -- mini player -----------------------------------------------------------
-
-    _buildPlayer() {
-        const section = new PopupMenu.PopupMenuSection();
-        this.menu.addMenuItem(section);
-        this._playerSection = section;
-
-        const player = new St.BoxLayout({style_class: 'ytmusic-player', x_expand: true});
-        section.actor.add_child(player);
-
-        // Cover and title open the expanded player.
-        const openBox = new St.BoxLayout({style_class: 'ytmusic-player-open-content', x_expand: true});
-        this._playerOpenButton = new St.Button({
-            style_class: 'ytmusic-player-open',
-            child: openBox,
-            x_expand: true,
-            can_focus: true,
-            accessible_name: 'Abrir o player',
-        });
-        this._playerOpenButton.connect('clicked', () => this._toggleNowPlaying());
-        player.add_child(this._playerOpenButton);
-
-        this._playerCoverSlot = new St.Bin({y_align: Clutter.ActorAlign.CENTER});
-        this._playerCoverUrl = undefined;
-        openBox.add_child(this._playerCoverSlot);
-
-        const info = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._playerTitle = new St.Label({style_class: 'ytmusic-player-title'});
-        this._titleClip = new ClipBox();
-        this._titleClip.add_child(this._playerTitle);
-        this._titleClip.connect('notify::width', () => this._updateMarquee());
-        this._playerArtist = ellipsized(new St.Label({style_class: 'ytmusic-player-artist'}));
-        info.add_child(this._titleClip);
-        info.add_child(this._playerArtist);
-        openBox.add_child(info);
-
-        const controls = new St.BoxLayout({style_class: 'ytmusic-player-controls'});
-        this._repeatButton = iconButton('media-playlist-repeat-symbolic', 'Repetir',
-            () => this._control('CycleRepeat'));
-        this._shuffleButton = iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
-            () => this._control('ToggleShuffle'));
-        this._prevButton = iconButton('media-skip-backward-symbolic', 'Anterior',
-            () => this._control('Previous'));
-        this._playPauseButton = iconButton('media-playback-start-symbolic', 'Tocar',
-            () => this._control('TogglePause'));
-        this._playPauseButton.add_style_class_name('ytmusic-play-pause');
-        this._nextButton = iconButton('media-skip-forward-symbolic', 'Próxima',
-            () => this._control('Next'));
-        this._controlSets.push({
-            repeat: this._repeatButton, shuffle: this._shuffleButton, prev: this._prevButton,
-            playPause: this._playPauseButton, next: this._nextButton,
-        });
-        controls.add_child(this._repeatButton);
-        controls.add_child(this._shuffleButton);
-        controls.add_child(this._prevButton);
-        controls.add_child(this._playPauseButton);
-        controls.add_child(this._nextButton);
-        player.add_child(controls);
-
-        this._updatePlayer(null);
-    }
-
     async _refreshPlayer() {
         try {
             const status = await this._client.call('GetStatus');
@@ -603,319 +530,12 @@ class YTMusicIndicator extends PanelMenu.Button {
         const track = state?.track;
         const active = !!state && state.state !== 'stopped';
 
-        const title = active ? track?.title || 'Música sem título' : 'Nada tocando';
-        if (this._playerTitle.text !== title) {
-            this._playerTitle.text = title;
-            this._updateMarquee();
-        }
-        if (!active) {
-            this._playerArtist.text = 'Escolha uma playlist ou música';
-        } else {
-            this._playerArtist.text = state.state === 'loading'
-                ? 'Carregando…'
-                : track?.artists || '';
-        }
-
-        const playing = state?.state === 'playing' || state?.state === 'loading';
-        const repeat = state?.repeat ?? 'off';
-        for (const set of this._controlSets) {
-            set.playPause.child.icon_name = playing
-                ? 'media-playback-pause-symbolic'
-                : 'media-playback-start-symbolic';
-            set.playPause.accessible_name = playing ? 'Pausar' : 'Tocar';
-
-            for (const button of [set.prev, set.playPause, set.next]) {
-                button.reactive = active;
-                button.can_focus = active;
-            }
-
-            // Repeat and shuffle also work before anything plays (they apply to the next queue).
-            set.repeat.child.icon_name = repeat === 'one'
-                ? 'media-playlist-repeat-song-symbolic' : 'media-playlist-repeat-symbolic';
-            set.repeat.accessible_name = {
-                off: 'Repetir: desligado', all: 'Repetir: todas', one: 'Repetir: esta música',
-            }[repeat];
-            setToggled(set.repeat, repeat !== 'off');
-            set.shuffle.accessible_name = state?.shuffle ? 'Aleatório: ligado' : 'Aleatório: desligado';
-            setToggled(set.shuffle, !!state?.shuffle);
-            for (const button of [set.repeat, set.shuffle]) {
-                button.reactive = !!state;
-                button.can_focus = !!state;
-            }
-        }
-
+        this._mini.updateText(state, active);
+        for (const set of this._controlSets)
+            updateControlSet(set, state, active);
         this._highlightPlayingRow(active ? track?.videoId : null);
-        this._updatePlayerCover(active ? track?.thumbnail ?? null : null, active);
-        this._playerOpenButton.reactive = active;
-        this._playerOpenButton.can_focus = active;
-
-        if (this._overlayActor === this._nowPlaying) {
-            if (!active) {
-                this._closePicker();
-            } else {
-                this._renderNowPlaying();
-                // Track or play/pause changed: re-read the position.
-                const key = `${track?.videoId}|${state.state}`;
-                if (key !== this._nowPlayingKey) {
-                    this._nowPlayingKey = key;
-                    this._syncPosition();
-                }
-            }
-        }
-    }
-
-    // -- expanded player ----------------------------------------------------------
-
-    _buildNowPlaying(parent) {
-        this._nowPlaying = new St.BoxLayout({
-            style_class: 'ytmusic-np',
-            orientation: Clutter.Orientation.VERTICAL,
-            x_expand: true,
-            visible: false,
-        });
-        const inner = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            x_expand: true,
-            y_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._nowPlaying.add_child(inner);
-
-        // Like the YouTube Music phone app: album on top, cover, title and
-        // artist, progress, then the controls.
-        this._npAlbum = ellipsized(new St.Label({style_class: 'ytmusic-np-album', x_align: Clutter.ActorAlign.CENTER}));
-        inner.add_child(this._npAlbum);
-
-        this._npCoverSlot = new St.Bin({x_align: Clutter.ActorAlign.CENTER});
-        this._npCoverUrl = undefined;
-        inner.add_child(this._npCoverSlot);
-
-        this._npTitle = ellipsized(new St.Label({style_class: 'ytmusic-np-title', x_align: Clutter.ActorAlign.CENTER}));
-        this._npArtist = ellipsized(new St.Label({style_class: 'ytmusic-np-artist', x_align: Clutter.ActorAlign.CENTER}));
-        inner.add_child(this._npTitle);
-        inner.add_child(this._npArtist);
-
-        // Progress: click anywhere on it to jump there. The reactive area is
-        // taller than the visible bar so it's easy to hit.
-        this._progress = new St.Widget({
-            style_class: 'ytmusic-progress',
-            layout_manager: new Clutter.BinLayout(),
-            reactive: true,
-            track_hover: true,
-            x_expand: true,
-        });
-        this._progressTrack = new St.Widget({
-            style_class: 'ytmusic-progress-track',
-            layout_manager: new Clutter.FixedLayout(),
-            x_expand: true,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._progressFill = new St.Widget({style_class: 'ytmusic-progress-fill'});
-        this._progressKnob = new St.Widget({style_class: 'ytmusic-progress-knob'});
-        this._progressTrack.add_child(this._progressFill);
-        this._progressTrack.add_child(this._progressKnob);
-        this._progress.add_child(this._progressTrack);
-        this._progress.connect('button-press-event', (actor, event) => {
-            const [x, y] = event.get_coords();
-            const [ok, localX] = actor.transform_stage_point(x, y);
-            if (ok && actor.width > 0)
-                this._seekTo(localX / actor.width);
-            return Clutter.EVENT_STOP;
-        });
-        inner.add_child(this._progress);
-
-        const times = new St.BoxLayout({style_class: 'ytmusic-np-times', x_expand: true});
-        this._npElapsed = new St.Label({style_class: 'ytmusic-np-time', x_expand: true});
-        this._npTotal = new St.Label({style_class: 'ytmusic-np-time'});
-        times.add_child(this._npElapsed);
-        times.add_child(this._npTotal);
-        inner.add_child(times);
-
-        const controls = new St.BoxLayout({
-            style_class: 'ytmusic-np-controls',
-            x_align: Clutter.ActorAlign.CENTER,
-        });
-        const set = {
-            shuffle: iconButton('media-playlist-shuffle-symbolic', 'Aleatório',
-                () => this._control('ToggleShuffle')),
-            prev: iconButton('media-skip-backward-symbolic', 'Anterior',
-                () => this._control('Previous')),
-            playPause: iconButton('media-playback-start-symbolic', 'Tocar',
-                () => this._control('TogglePause')),
-            next: iconButton('media-skip-forward-symbolic', 'Próxima',
-                () => this._control('Next')),
-            repeat: iconButton('media-playlist-repeat-symbolic', 'Repetir',
-                () => this._control('CycleRepeat')),
-        };
-        set.playPause.add_style_class_name('ytmusic-play-pause');
-        set.playPause.add_style_class_name('ytmusic-np-play');
-        for (const button of [set.shuffle, set.prev, set.playPause, set.next, set.repeat]) {
-            button.child.icon_size = button === set.playPause ? 28 : 20;
-            controls.add_child(button);
-        }
-        this._controlSets.push(set);
-        inner.add_child(controls);
-
-        parent.add_child(this._nowPlaying);
-    }
-
-    _toggleNowPlaying() {
-        if (this._overlayActor === this._nowPlaying) {
-            this._closePicker();
-            return;
-        }
-        if (!this._playback || this._playback.state === 'stopped')
-            return;
-        this._float.close();
-        // The controls move into the expanded player; it takes the mini player's space.
-        // (the search row is hidden by the overlay too)
-        this._npExtraHeight = this._playerSection.actor.height +
-            this._playerSeparator.actor.height + this._searchRow.height +
-            (this._subtitle.visible ? this._subtitle.height : 0);
-        this._playerSection.actor.hide();
-        this._playerSeparator.actor.hide();
-        const h = this._listHeight ?? this._settings.get_int('popup-height');
-        this._setListHeight(h, h);
-        this._enterOverlay(NOW_PLAYING, 'Tocando agora', null, this._nowPlaying);
-        this._nowPlayingKey = null;
-        this._npCoverUrl = undefined; // re-create the cover at the current size
-        this._renderNowPlaying();
-        this._syncPosition();
-        this._startProgress();
-    }
-
-    _renderNowPlaying() {
-        const state = this._playback;
-        const track = state?.track;
-        this._npTitle.text = track?.title || 'Música sem título';
-        this._npArtist.text = state?.state === 'loading' ? 'Carregando…' : track?.artists || '';
-        this._npAlbum.text = track?.album ?? '';
-        this._npAlbum.visible = !!track?.album;
-
-        const url = largeCover(track?.thumbnail);
-        if (url !== this._npCoverUrl) {
-            this._npCoverUrl = url;
-            this._npCoverSlot.child?.destroy();
-            const cover = this._covers.cover(url, 'ytmusic-cover ytmusic-np-cover') ??
-                new St.Bin({
-                    style_class: 'ytmusic-cover ytmusic-np-cover',
-                    child: new St.Icon({icon_name: 'audio-x-generic-symbolic', style_class: 'ytmusic-cover-placeholder'}),
-                });
-            // As big as the popup height allows, leaving room for the rest.
-            const height = (this._listHeight ?? 560) + this._npExtraHeight;
-            const size = Math.max(120, Math.min(300, height - NOW_PLAYING_CHROME));
-            cover._baseStyle = `width: ${size}px; height: ${size}px;`;
-            cover.style = cover._baseStyle;
-            this._npCoverSlot.child = cover;
-            this._covers.flush();
-        }
-        if (state?.duration)
-            this._progressBase.duration = state.duration;
-        if (state?.state === 'loading')
-            this._progress.add_style_class_name('ytmusic-progress-loading');
-        else
-            this._progress.remove_style_class_name('ytmusic-progress-loading');
-        this._tickProgress();
-    }
-
-    async _syncPosition() {
-        this._lastSync = GLib.get_monotonic_time();
-        try {
-            const data = await this._client.call('GetPosition');
-            if (!this._destroyed)
-                this._setPositionBase(data.position, data.duration);
-        } catch (e) {
-            // Keep interpolating; the next sync will correct it.
-        }
-    }
-
-    _setPositionBase(position, duration) {
-        this._progressBase = {
-            position: position ?? 0,
-            at: GLib.get_monotonic_time(),
-            duration: duration ?? this._progressBase.duration,
-        };
-        this._tickProgress();
-    }
-
-    _currentPosition() {
-        const {position, at, duration} = this._progressBase;
-        const playing = this._playback?.state === 'playing';
-        const now = position + (playing ? (GLib.get_monotonic_time() - at) / 1e6 : 0);
-        return duration ? Math.min(now, duration) : now;
-    }
-
-    _tickProgress() {
-        const duration = this._progressBase.duration;
-        const position = this._currentPosition();
-        const ratio = duration ? Math.max(0, Math.min(1, position / duration)) : 0;
-        const width = this._progressTrack.width;
-        const fill = Math.round(width * ratio);
-        this._progressFill.set_size(fill, this._progressTrack.height);
-        const knob = this._progressKnob;
-        knob.set_position(Math.round(fill - knob.width / 2),
-            Math.round((this._progressTrack.height - knob.height) / 2));
-        this._npElapsed.text = formatTime(position);
-        this._npTotal.text = duration ? formatTime(duration) : '--:--';
-    }
-
-    _startProgress() {
-        this._stopProgress();
-        this._progressTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, PROGRESS_TICK_MS, () => {
-            this._tickProgress();
-            if (GLib.get_monotonic_time() - this._lastSync > PROGRESS_SYNC_MS * 1000)
-                this._syncPosition();
-            return GLib.SOURCE_CONTINUE;
-        });
-    }
-
-    _stopProgress() {
-        if (this._progressTimeoutId) {
-            GLib.source_remove(this._progressTimeoutId);
-            this._progressTimeoutId = 0;
-        }
-    }
-
-    async _seekTo(ratio) {
-        const duration = this._progressBase.duration;
-        if (!duration || this._playback?.state === 'stopped')
-            return;
-        const seconds = Math.max(0, Math.min(1, ratio)) * duration;
-        this._setPositionBase(seconds, duration); // move the bar right away
-        try {
-            const data = await this._client.call('Seek', seconds);
-            if (!this._destroyed)
-                this._setPositionBase(data.position, data.duration);
-        } catch (e) {
-            if (!this._destroyed)
-                this._syncPosition();
-        }
-    }
-
-    // Long titles scroll back and forth while the popup is open.
-    _updateMarquee() {
-        const label = this._playerTitle;
-        label.remove_transition('translation-x');
-        label.translation_x = 0;
-        // Animations on hidden actors finish at once, which would loop forever.
-        if (!this.menu.isOpen || !this._titleClip.mapped)
-            return;
-        const overflow = label.width - this._titleClip.width;
-        if (this._titleClip.width <= 0 || overflow <= 2)
-            return;
-        const duration = Math.max(1500, overflow * 30);
-        const step = (to, next) => label.ease({
-            translation_x: to,
-            duration,
-            delay: 1500,
-            mode: Clutter.AnimationMode.LINEAR,
-            onComplete: next,
-        });
-        const loop = () => {
-            if (this._titleClip.mapped)
-                step(-overflow, () => step(0, loop));
-        };
-        loop();
+        this._mini.updateCover(active ? track?.thumbnail ?? null : null, active);
+        this._np.onPlaybackChanged(state, active);
     }
 
     _highlightPlayingRow(videoId) {
@@ -947,11 +567,8 @@ class YTMusicIndicator extends PanelMenu.Button {
     destroy() {
         this._destroyed = true;
         this._serial++;
-        this._playerTitle.remove_transition('translation-x');
-        if (this._progressTimeoutId) {
-            GLib.source_remove(this._progressTimeoutId);
-            this._progressTimeoutId = 0;
-        }
+        this._mini.destroy();
+        this._np.destroy();
         this._playlistsView.destroy();
         this._tracksView.destroy();
         this._searchView.destroy();
