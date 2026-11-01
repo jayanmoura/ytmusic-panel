@@ -1,5 +1,6 @@
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Pango from 'gi://Pango';
 import St from 'gi://St';
@@ -16,6 +17,9 @@ const HIDDEN_PLAYLIST_IDS = new Set(['SE']); // "Episódios para mais tarde"
 
 // Rows are created in pages so huge playlists don't stall the shell.
 const TRACKS_PAGE_SIZE = 100;
+
+const SEARCH_DEBOUNCE_MS = 400;
+const SEARCH_MIN_CHARS = 2;
 
 const numberFormat = new Intl.NumberFormat('pt-BR');
 
@@ -77,6 +81,10 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._tracks = [];
         this._renderedTracks = 0;
         this._moreButton = null;
+        this._query = '';
+        this._results = [];
+        this._searchTimeoutId = 0;
+        this._viewBeforeSearch = 'playlists';
         // Bumped on every navigation/load; stale async replies are dropped.
         this._serial = 0;
 
@@ -101,6 +109,15 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._settingsChangedId = this._settings.connect(
             'changed::popup-max-height', () => this._applyMaxHeight());
         this._applyMaxHeight();
+    }
+
+    // Must run after the panel's PopupMenuManager registered this menu: its own
+    // open handler pushes a modal that moves key focus to the menu actor.
+    focusSearchOnOpen() {
+        this.menu.connect('open-state-changed', (_menu, open) => {
+            if (open)
+                this._searchEntry.grab_key_focus();
+        });
     }
 
     _icon(name) {
@@ -129,11 +146,25 @@ class YTMusicIndicator extends PanelMenu.Button {
         });
         section.actor.add_child(box);
 
+        // Search field.
+        this._searchEntry = new St.Entry({
+            style_class: 'ytmusic-search',
+            hint_text: 'Buscar músicas',
+            can_focus: true,
+            x_expand: true,
+            primary_icon: new St.Icon({icon_name: 'edit-find-symbolic', icon_size: 16}),
+        });
+        this._clearSearchIcon = new St.Icon({icon_name: 'edit-clear-symbolic', icon_size: 16});
+        this._searchEntry.clutter_text.connect('text-changed', () => this._onSearchChanged());
+        this._searchEntry.connect('secondary-icon-clicked', () => this._searchEntry.set_text(''));
+        this._searchEntry.clutter_text.connect('activate', () => this._runSearchNow());
+        box.add_child(this._searchEntry);
+
         // Header: [back] title/subtitle [refresh]
         const header = new St.BoxLayout({style_class: 'ytmusic-header'});
 
         this._backButton = this._iconButton('go-previous-symbolic', 'Voltar',
-            () => this._showPlaylists());
+            () => this._goBack());
         this._backButton.visible = false;
         header.add_child(this._backButton);
 
@@ -192,12 +223,19 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._scroll.style = `max-height: ${h}px;`;
     }
 
-    _setHeader(title, subtitle = null, canGoBack = false) {
+    _setHeader(title, subtitle = null, canGoBack = false, showToolbar = canGoBack) {
         this._title.text = title;
         this._subtitle.text = subtitle ?? '';
         this._subtitle.visible = !!subtitle;
         this._backButton.visible = canGoBack;
-        this._toolbar.visible = canGoBack;
+        this._toolbar.visible = showToolbar;
+    }
+
+    _goBack() {
+        if (this._view === 'search')
+            this._searchEntry.set_text(''); // _onSearchChanged leaves the search view
+        else
+            this._showPlaylists();
     }
 
     _clearList() {
@@ -217,7 +255,9 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _refresh() {
-        if (this._view === 'tracks')
+        if (this._view === 'search')
+            this._runSearchNow();
+        else if (this._view === 'tracks')
             this._loadTracks(true);
         else
             this._loadPlaylists(true);
@@ -241,14 +281,18 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _onLoadError(e) {
-        const hasData = this._view === 'playlists' ? !!this._playlists : this._tracks.length > 0;
+        const hasData = {
+            playlists: !!this._playlists,
+            tracks: this._tracks.length > 0,
+            search: this._results.length > 0,
+        }[this._view];
         // Network hiccup with data on screen: keep showing what we have.
         if (e.code === 'network' && hasData)
             return;
         if (e.code === 'auth_required')
             this._playlists = null;
         if (!ERROR_TEXT[e.code])
-            console.warn(`[ytmusic-panel] ${e.code ?? ''} ${e.message}`);
+            console.error(e, '[ytmusic-panel] unexpected error');
         this._showMessage(...(ERROR_TEXT[e.code] ?? ERROR_TEXT.internal));
     }
 
@@ -408,7 +452,7 @@ class YTMusicIndicator extends PanelMenu.Button {
 
         const end = Math.min(this._renderedTracks + TRACKS_PAGE_SIZE, this._tracks.length);
         for (let i = this._renderedTracks; i < end; i++)
-            this._list.add_child(this._createTrackRow(this._tracks[i], i));
+            this._list.add_child(this._createTrackRow(this._tracks[i], () => this._playFrom(i)));
         this._renderedTracks = end;
         this._updateMoreButton();
     }
@@ -435,7 +479,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         this._list.add_child(this._moreButton);
     }
 
-    _createTrackRow(track, index) {
+    _createTrackRow(track, onPlay) {
         const row = new St.BoxLayout({
             style_class: 'ytmusic-row ytmusic-track-row',
             x_expand: true,
@@ -448,8 +492,7 @@ class YTMusicIndicator extends PanelMenu.Button {
         if (track.videoId && track.videoId === this._playback?.track?.videoId)
             row.add_style_class_name('ytmusic-row-playing');
 
-        const playButton = this._iconButton('media-playback-start-symbolic', 'Tocar',
-            () => this._playFrom(index));
+        const playButton = this._iconButton('media-playback-start-symbolic', 'Tocar', onPlay);
         playButton.add_style_class_name('ytmusic-row-play');
         playButton.reactive = track.available;
         playButton.can_focus = track.available;
@@ -481,6 +524,83 @@ class YTMusicIndicator extends PanelMenu.Button {
             }));
         }
         return row;
+    }
+
+    // -- search ----------------------------------------------------------------
+
+    _onSearchChanged() {
+        const text = this._searchEntry.get_text();
+        this._searchEntry.secondary_icon = text ? this._clearSearchIcon : null;
+
+        if (this._searchTimeoutId) {
+            GLib.source_remove(this._searchTimeoutId);
+            this._searchTimeoutId = 0;
+        }
+
+        const query = text.trim();
+        if (!query) {
+            this._leaveSearch();
+            return;
+        }
+        if (query.length < SEARCH_MIN_CHARS)
+            return;
+        this._searchTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SEARCH_DEBOUNCE_MS, () => {
+            this._searchTimeoutId = 0;
+            this._search(query);
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _runSearchNow() {
+        if (this._searchTimeoutId) {
+            GLib.source_remove(this._searchTimeoutId);
+            this._searchTimeoutId = 0;
+        }
+        const query = this._searchEntry.get_text().trim();
+        if (query)
+            this._search(query);
+    }
+
+    _search(query) {
+        if (this._view !== 'search') {
+            // Remember where to go back to.
+            this._viewBeforeSearch = this._view;
+            this._view = 'search';
+        }
+        this._query = query;
+        this._results = [];
+        this._setHeader('Resultados', `"${query}"`, true, false);
+        this._showLoading('Buscando…');
+        return this._load(
+            () => this._client.call('Search', query),
+            data => {
+                this._results = data;
+                this._renderResults();
+            });
+    }
+
+    _leaveSearch() {
+        if (this._view !== 'search')
+            return;
+        this._serial++; // drop any in-flight search reply
+        this._query = '';
+        this._results = [];
+        if (this._viewBeforeSearch === 'tracks' && this._playlist) {
+            this._showTracks(this._playlist);
+        } else {
+            this._view = 'playlists';
+            this._showPlaylists();
+        }
+    }
+
+    _renderResults() {
+        this._clearList();
+        if (this._results.length === 0) {
+            this._showMessage('Nenhuma música encontrada.', 'Tente outras palavras.');
+            return;
+        }
+        for (const track of this._results)
+            this._list.add_child(this._createTrackRow(track, () => this._play('PlayTrack', track.videoId)));
     }
 
     // -- mini player -----------------------------------------------------------
@@ -571,7 +691,7 @@ class YTMusicIndicator extends PanelMenu.Button {
     }
 
     _highlightPlayingRow(videoId) {
-        if (this._view !== 'tracks')
+        if (this._view !== 'tracks' && this._view !== 'search')
             return;
         for (const row of this._list.get_children()) {
             if (row._videoId === undefined)
@@ -610,6 +730,10 @@ class YTMusicIndicator extends PanelMenu.Button {
 
     destroy() {
         this._serial++;
+        if (this._searchTimeoutId) {
+            GLib.source_remove(this._searchTimeoutId);
+            this._searchTimeoutId = 0;
+        }
         this._client?.destroy();
         this._client = null;
         if (this._settingsChangedId) {
@@ -625,6 +749,7 @@ export default class YTMusicPanelExtension extends Extension {
     enable() {
         this._indicator = new YTMusicIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
+        this._indicator.focusSearchOnOpen();
     }
 
     disable() {

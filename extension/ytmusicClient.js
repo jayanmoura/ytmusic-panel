@@ -1,4 +1,5 @@
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 
 const BUS_NAME = 'io.github.jayan.YTMusic';
 const OBJECT_PATH = '/io/github/jayan/YTMusic';
@@ -13,6 +14,9 @@ const IFACE_XML = `
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
     <method name="RefreshPlaylistTracks">
+      <arg type="s" direction="in"/><arg type="s" direction="out"/>
+    </method>
+    <method name="Search">
       <arg type="s" direction="in"/><arg type="s" direction="out"/>
     </method>
     <method name="PlayPlaylist">
@@ -90,11 +94,18 @@ export class YTMusicClient {
         let json;
         try {
             const proxy = await this._getProxy();
-            [json] = await proxy[`${method}Async`](...args, this._cancellable);
+            const invoke = proxy[`${method}Async`];
+            if (!invoke)
+                throw new Error(`ytmusic-panel: method ${method} missing from IFACE_XML`);
+            [json] = await invoke.call(proxy, ...args, this._cancellable);
         } catch (e) {
             if (e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
                 throw new YTMusicError('cancelled', 'cancelled');
-            throw new YTMusicError('offline', e.message);
+            // Only bus/transport failures mean the service is unreachable;
+            // anything else is a bug and should surface as such.
+            if (e instanceof GLib.Error)
+                throw new YTMusicError('offline', e.message);
+            throw e;
         }
 
         let reply;

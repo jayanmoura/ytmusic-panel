@@ -176,3 +176,9 @@
   color: #ff4e45;
   font-weight: bold;
 }
+
+.ytmusic-search {
+  margin: 4px 12px 8px 12px;
+  border-radius: 99px;
+  padding: 6px 12px;
+}

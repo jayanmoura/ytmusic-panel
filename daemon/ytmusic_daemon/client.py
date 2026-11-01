@@ -18,6 +18,8 @@ log = logging.getLogger(__name__)
 
 PLAYLISTS_TTL = 300  # seconds
 TRACKS_TTL = 600
+SEARCH_TTL = 120
+SEARCH_LIMIT = 30
 # First page served immediately; the rest is fetched in the background.
 FIRST_PAGE_LIMIT = 100
 
@@ -37,12 +39,16 @@ class UnavailableError(ServiceError):
 class Client:
     def __init__(self):
         self._yt: YTMusic | None = None
+        # ytmusicapi's "songs" search filter returns nothing with language="pt",
+        # so searches use a second instance in English (song titles aren't translated).
+        self._yt_search: YTMusic | None = None
         self._auth_mtime: float | None = None
         # "missing" | "unverified" | "ok" | "invalid"
         self.auth_state = "missing"
         self._lock = threading.RLock()
         self._cache = TTLCache(PLAYLISTS_TTL)
         self._tracks_cache = TTLCache(TRACKS_TTL)
+        self._search_cache = TTLCache(SEARCH_TTL)
         self._full_fetches: dict[str, Future] = {}
         self._bg = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ytm-bg")
         # videoId -> shaped track, so PlayTrack can show metadata for known songs.
@@ -56,7 +62,7 @@ class Client:
             try:
                 mtime = AUTH_FILE.stat().st_mtime
             except FileNotFoundError:
-                self._yt = None
+                self._yt = self._yt_search = None
                 self._auth_mtime = None
                 self.auth_state = "missing"
                 raise AuthError("auth file not found")
@@ -66,8 +72,10 @@ class Client:
                 session.request = _with_timeout(session.request, 20)
                 try:
                     self._yt = YTMusic(str(AUTH_FILE), requests_session=session, language="pt")
+                    self._yt_search = YTMusic(str(AUTH_FILE), requests_session=session,
+                                              language="en")
                 except Exception as e:
-                    self._yt = None
+                    self._yt = self._yt_search = None
                     self._auth_mtime = mtime
                     self.auth_state = "invalid"
                     log.warning("could not load auth file (%s)", type(e).__name__)
@@ -76,6 +84,7 @@ class Client:
                 self.auth_state = "unverified"
                 self._cache.invalidate()
                 self._tracks_cache.invalidate()
+                self._search_cache.invalidate()
                 log.info("credentials loaded")
             elif self.auth_state == "invalid":
                 raise AuthError("credentials rejected")
@@ -87,9 +96,11 @@ class Client:
         except AuthError:
             pass
 
-    def _call(self, fn):
+    def _call(self, fn, search: bool = False):
         """Run fn(yt) translating library errors into AuthError/ServiceError."""
         yt = self._ensure_client()
+        if search:
+            yt = self._yt_search
         try:
             result = fn(yt)
         except YTMusicServerError as e:
@@ -180,6 +191,20 @@ class Client:
             "complete": complete,
             "tracks": tracks,
         }
+
+    def search(self, query: str) -> list[dict]:
+        query = " ".join(query.split())
+        if not query:
+            return []
+
+        def fetch():
+            raw = self._call(
+                lambda yt: yt.search(query, filter="songs", limit=SEARCH_LIMIT), search=True)
+            tracks = [_shape_track(t) for t in raw if t.get("videoId")][:SEARCH_LIMIT]
+            self._remember(tracks)
+            return tracks
+
+        return self._search_cache.get_or_fetch(query.casefold(), fetch)
 
     def _remember(self, tracks: list[dict]) -> None:
         with self._lock:

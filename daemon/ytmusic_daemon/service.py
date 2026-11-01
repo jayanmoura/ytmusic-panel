@@ -45,6 +45,10 @@ INTROSPECTION_XML = f"""
       <arg type="s" name="playlist_id" direction="in"/>
       <arg type="s" name="json" direction="out"/>
     </method>
+    <method name="Search">
+      <arg type="s" name="query" direction="in"/>
+      <arg type="s" name="json" direction="out"/>
+    </method>
     <method name="PlayPlaylist">
       <arg type="s" name="playlist_id" direction="in"/>
       <arg type="i" name="start_index" direction="in"/>
@@ -114,6 +118,7 @@ class Service:
             "GetPlaylistTracks": lambda pid: ok(self.client.get_playlist_tracks(pid)),
             "RefreshPlaylistTracks": lambda pid: ok(
                 self.client.get_playlist_tracks(pid, force=True)),
+            "Search": lambda q: ok(self._search(q)),
             "PlayPlaylist": lambda pid, start: ok(self._play_playlist(pid, start)),
             "PlayTrack": lambda vid: ok(self._play_track(vid)),
             "TogglePause": lambda: self._control(self.player.toggle_pause),
@@ -263,6 +268,11 @@ class Service:
                 log.warning("append failed: %s", e)
                 return
         log.info("queued %d more tracks", len(rest))
+
+    def _search(self, query: str) -> list[dict]:
+        if len(query) > 200:
+            raise BadRequest("Busca muito longa.")
+        return self.client.search(query)
 
     def _play_track(self, video_id: str) -> dict:
         if not video_id:
