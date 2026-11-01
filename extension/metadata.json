@@ -1,0 +1,9 @@
+{
+  "uuid": "ytmusic-panel@jayan",
+  "name": "YouTube Music Panel",
+  "description": "YouTube Music no painel superior: playlists, busca e reprodução.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.ytmusic-panel",
+  "url": "https://github.com/jayan/ytmusic-panel",
+  "version-name": "0.1"
+}

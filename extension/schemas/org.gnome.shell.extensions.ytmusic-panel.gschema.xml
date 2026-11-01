@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.ytmusic-panel"
+          path="/org/gnome/shell/extensions/ytmusic-panel/">
+    <key name="popup-max-height" type="i">
+      <range min="300" max="1200"/>
+      <default>560</default>
+      <summary>Altura máxima do popup em pixels</summary>
+    </key>
+  </schema>
+</schemalist>

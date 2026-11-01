@@ -1,0 +1,4 @@
+extension/schemas/gschemas.compiled
+__pycache__/
+*.pyc
+*.zip
