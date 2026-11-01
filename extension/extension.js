@@ -10,85 +10,13 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import {
+    ERROR_TEXT, FILTER_DEBOUNCE_MS, LIKED_PLAYLIST_ID, NOW_PLAYING, NOW_PLAYING_CHROME,
+    PREPARE_DELAY_MS, PROGRESS_SYNC_MS, PROGRESS_TICK_MS, SEARCH_DEBOUNCE_MS, SEARCH_MIN_CHARS,
+    SHARE_URL, TOAST_MS, TRACKS_PAGE_SIZE,
+} from './constants.js';
+import {formatTime, largeCover, normalize, numberFormat, sortPlaylists, trackCountText} from './util.js';
 import {YTMusicClient} from './ytmusicClient.js';
-
-const LIKED_PLAYLIST_ID = 'LM';
-const EPISODES_PLAYLIST_ID = 'SE'; // "Episódios para mais tarde"
-
-// Rows are created in pages so huge playlists don't stall the shell.
-const TRACKS_PAGE_SIZE = 100;
-const FILTER_DEBOUNCE_MS = 150;
-// Hovering a track this long asks the service to resolve its audio ahead of a click.
-const PREPARE_DELAY_MS = 250;
-const TOAST_MS = 2000;
-const SHARE_URL = 'https://music.youtube.com/watch?v=';
-
-const SEARCH_DEBOUNCE_MS = 400;
-const SEARCH_MIN_CHARS = 2;
-
-const numberFormat = new Intl.NumberFormat('pt-BR');
-
-const ERROR_TEXT = {
-    auth_required: [
-        'Você não está conectado ao YouTube Music.',
-        'Abra as configurações (engrenagem) e entre com o navegador.',
-    ],
-    offline: [
-        'O serviço ytmusic-daemon não está respondendo.',
-        'No terminal, rode: systemctl --user start ytmusic-daemon',
-    ],
-    network: [
-        'Não foi possível falar com o YouTube Music.',
-        'Verifique a conexão e clique em atualizar.',
-    ],
-    unavailable: [
-        'Conteúdo indisponível no YouTube Music.',
-        'A playlist pode ter sido removida ou estar privada.',
-    ],
-    internal: [
-        'O serviço encontrou um erro.',
-        'Veja os logs: journalctl --user -u ytmusic-daemon',
-    ],
-};
-
-function sortPlaylists(playlists, showEpisodes) {
-    const visible = playlists.filter(p => showEpisodes || p.id !== EPISODES_PLAYLIST_ID);
-    const liked = visible.filter(p => p.id === LIKED_PLAYLIST_ID);
-    return [...liked, ...visible.filter(p => p.id !== LIKED_PLAYLIST_ID)];
-}
-
-function trackCountText(count) {
-    if (count === 1)
-        return '1 música';
-    return `${numberFormat.format(count)} músicas`;
-}
-
-const PROGRESS_TICK_MS = 250;
-// The position is interpolated locally and re-read from the service this often.
-const PROGRESS_SYNC_MS = 5000;
-const NOW_PLAYING = {videoId: null}; // overlay marker for the expanded player
-// Height of everything in the expanded player except the cover.
-const NOW_PLAYING_CHROME = 250;
-
-// Thumbnails come at 120px; ask the image server for a size fit for the big cover.
-function largeCover(url) {
-    return url?.replace(/=w\d+-h\d+/, '=w544-h544').replace(/=s\d+(?=-|$)/, '=s544') ?? null;
-}
-
-function formatTime(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0)
-        return '0:00';
-    const s = Math.floor(seconds);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const ss = String(s % 60).padStart(2, '0');
-    return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
-}
-
-// Case and accent insensitive, for the playlist filter.
-function normalize(text) {
-    return (text ?? '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
-}
 
 function ellipsized(label) {
     label.clutter_text.ellipsize = Pango.EllipsizeMode.END;

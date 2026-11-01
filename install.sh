@@ -65,8 +65,15 @@ else
     fi
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' EXIT
-    gnome-extensions pack "$ROOT/extension" --force --out-dir="$tmp" \
-        --extra-source=ytmusicClient.js --extra-source=icons
+    # pack only adds extension.js, prefs.js, metadata.json, stylesheet.css and
+    # schemas by itself; every other module and folder goes in as extra source.
+    extra=()
+    for f in "$ROOT"/extension/*.js "$ROOT"/extension/*/; do
+        name=$(basename "$f")
+        case "$name" in extension.js|prefs.js|schemas) continue ;; esac
+        extra+=(--extra-source="$name")
+    done
+    gnome-extensions pack "$ROOT/extension" --force --out-dir="$tmp" "${extra[@]}"
     gnome-extensions install --force "$tmp/$UUID.shell-extension.zip"
     echo "Extensão copiada para $EXT_DIR"
 fi
