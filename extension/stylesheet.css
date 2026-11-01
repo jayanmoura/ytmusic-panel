@@ -2,8 +2,70 @@
   width: 400px;
 }
 
-.ytmusic-placeholder {
-  padding: 24px 12px;
+.ytmusic-header {
+  padding: 4px 12px 8px 12px;
+  spacing: 8px;
+}
+
+.ytmusic-title {
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+.ytmusic-icon-button {
+  padding: 6px;
+  border-radius: 99px;
+}
+
+.ytmusic-icon-button:hover,
+.ytmusic-icon-button:focus {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.ytmusic-icon-button:insensitive {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.ytmusic-row {
+  padding: 8px 12px;
+  border-radius: 8px;
+  margin: 0 4px;
+}
+
+.ytmusic-row:hover,
+.ytmusic-row:focus {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.ytmusic-row:active {
+  background-color: rgba(255, 255, 255, 0.16);
+}
+
+.ytmusic-row-title {
+  margin-right: 12px;
+}
+
+.ytmusic-row-detail {
+  font-size: 0.9em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.ytmusic-row-heart {
+  color: #ff4e45;
+}
+
+.ytmusic-message {
+  padding: 24px 16px;
+  spacing: 6px;
+}
+
+.ytmusic-message-title {
   text-align: center;
-  color: #b0b0b0;
+  font-weight: bold;
+}
+
+.ytmusic-message-hint {
+  text-align: center;
+  font-size: 0.9em;
+  color: rgba(255, 255, 255, 0.6);
 }
