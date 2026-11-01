@@ -1,32 +1,42 @@
 # ytmusic-panel
 
-Player não oficial do YouTube Music para o painel do GNOME Shell.
+**English** | [Português (Brasil)](README.pt-BR.md)
 
-> **Aviso:** projeto independente e não oficial, sem nenhuma ligação com o Google ou o YouTube, nem endossado por eles. "YouTube" e "YouTube Music" são marcas do Google LLC. O projeto usa a API interna do YouTube Music por meio do [ytmusicapi](https://github.com/sigma67/ytmusicapi) e do [yt-dlp](https://github.com/yt-dlp/yt-dlp); o Google pode mudar ou bloquear esse acesso a qualquer momento. Use por sua conta e risco.
+[![CI](https://github.com/jayanmoura/ytmusic-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/jayanmoura/ytmusic-panel/actions/workflows/ci.yml)
+[![License: GPL-2.0-or-later](https://img.shields.io/badge/license-GPL--2.0--or--later-blue.svg)](LICENSE)
+[![GNOME Shell 50](https://img.shields.io/badge/GNOME%20Shell-50-4a86cf.svg?logo=gnome&logoColor=white)](https://www.gnome.org/)
 
-Extensão do GNOME Shell 50 que coloca o YouTube Music no painel superior. Pelo popup você vê suas playlists, abre e toca playlists ou músicas, busca músicas, adiciona músicas às suas playlists e controla a reprodução num mini player. As teclas de mídia do teclado e o controle de mídia do GNOME também funcionam.
+An unofficial YouTube Music player for the GNOME Shell top bar.
 
-## Como funciona
+<!-- Demo: docs/demo.gif goes here (recorded in step 5). -->
 
-São duas partes:
+> **Disclaimer:** this is an independent, unofficial project. It is not affiliated with, endorsed by or connected to Google or YouTube. "YouTube" and "YouTube Music" are trademarks of Google LLC. The project talks to YouTube Music's internal API through [ytmusicapi](https://github.com/sigma67/ytmusicapi) and [yt-dlp](https://github.com/yt-dlp/yt-dlp), and Google can change or block that access at any time. Use it at your own risk.
 
-- **Extensão** (`extension/`, UUID `ytmusic-panel@jayan`): só desenha a interface. Ela não acessa a rede; conversa com o serviço pelo D-Bus de sessão, sempre de forma assíncrona.
-- **Serviço** (`daemon/`, `ytmusic-daemon`): processo Python que roda como serviço systemd de usuário. Usa o [ytmusicapi](https://github.com/sigma67/ytmusicapi) para falar com a sua conta, o `mpv` (só áudio) para tocar, o `yt-dlp` para obter o áudio e o plugin `mpv-mpris` para expor o player via MPRIS.
+A GNOME Shell 50 extension that puts YouTube Music in the top bar. From its popup you can browse your playlists, play a playlist or a single song, search for songs, add songs to your playlists and control playback from a mini player or an expanded "now playing" view. Keyboard media keys and GNOME's media controls work too.
 
-O serviço publica `io.github.jayanmoura.YTMusic` no barramento de sessão (caminho `/io/github/jayanmoura/YTMusic`). Todos os métodos devolvem JSON em texto: `{"ok": true, "data": ...}` ou `{"ok": false, "error": "...", "message": "..."}`.
+The interface is in Brazilian Portuguese; this README quotes its labels as they appear, with a translation in parentheses.
 
-## Requisitos
+## How it works
 
-- Ubuntu 26.04 (ou outra distribuição com GNOME Shell 50, sessão Wayland ou X11)
-- Pacotes do sistema: `mpv`, `mpv-mpris`, `python3-gi`, `python3-venv`
+There are two parts:
+
+- **Extension** (`extension/`, UUID `ytmusic-panel@jayan`): only draws the interface. It never touches the network; it talks to the service over the session D-Bus, always asynchronously.
+- **Service** (`daemon/`, `ytmusic-daemon`): a Python process running as a systemd user service. It uses [ytmusicapi](https://github.com/sigma67/ytmusicapi) for your account, `mpv` (audio only) for playback, `yt-dlp` to get the audio streams and the `mpv-mpris` plugin to expose the player over MPRIS.
+
+The service owns `io.github.jayanmoura.YTMusic` on the session bus (object path `/io/github/jayanmoura/YTMusic`). Every method returns a JSON string: `{"ok": true, "data": ...}` or `{"ok": false, "error": "...", "message": "..."}`. All arguments are validated before anything else runs; invalid input gets `"error": "invalid_request"`.
+
+## Requirements
+
+- Ubuntu 26.04, or another distribution with GNOME Shell 50 (GNOME 50 only has a Wayland session)
+- System packages: `mpv`, `mpv-mpris`, `python3-gi`, `python3-venv`
 
 ```bash
 sudo apt install mpv mpv-mpris python3-gi python3-venv
 ```
 
-O resto (ytmusicapi, yt-dlp e o runtime JavaScript `deno`, que o yt-dlp precisa para o YouTube) é instalado num ambiente virtual próprio em `~/.local/share/ytmusic-daemon/venv`. Nada é instalado com pip no Python do sistema.
+Everything else (ytmusicapi, yt-dlp and the `deno` JavaScript runtime that yt-dlp needs for YouTube) goes into a dedicated virtual environment at `~/.local/share/ytmusic-daemon/venv`. Nothing is installed into the system Python.
 
-## Instalação
+## Installation
 
 ```bash
 git clone https://github.com/jayanmoura/ytmusic-panel.git
@@ -34,185 +44,185 @@ cd ytmusic-panel
 ./install.sh
 ```
 
-O script:
+The script:
 
-1. confere os pacotes do sistema (se faltar algum, mostra o comando `apt` e para; ele nunca usa `sudo`);
-2. cria o ambiente virtual, instala o serviço e o registra no systemd de usuário (`~/.config/systemd/user/ytmusic-daemon.service`), já iniciado e configurado para subir com a sessão;
-3. instala a extensão em `~/.local/share/gnome-shell/extensions/` e a habilita, sem mexer nas suas outras extensões.
+1. checks the system packages (if one is missing it prints the `apt` command and stops; it never runs `sudo`);
+2. creates the virtual environment, installs the service and registers it with the systemd user instance (`~/.config/systemd/user/ytmusic-daemon.service`), started and enabled for your session;
+3. installs the extension into `~/.local/share/gnome-shell/extensions/` and enables it, leaving your other extensions alone.
 
-Depois faça o login (próxima seção) e **saia e entre de novo na sessão**. No Wayland a shell só reconhece extensões novas no login.
+Then log in (next section) and **log out of your desktop session and back in**: on Wayland, GNOME Shell only picks up new extensions at login.
 
-Para desenvolver, use `./install.sh --dev`: a extensão vira um link simbólico para a pasta `extension/` e o serviço é instalado em modo editável.
+For development, use `./install.sh --dev`: the extension becomes a symlink to the `extension/` folder and the service is installed in editable mode.
 
-## Login
+## Logging in
 
-O serviço usa a sessão do YouTube que já está aberta no seu navegador (os cookies dele). Não precisa copiar nada:
+The service reuses the YouTube session that is already open in your browser (its cookies), so there is nothing to copy and paste:
 
-1. No navegador, abra https://music.youtube.com e confira se está conectado na sua conta.
-2. Abra as configurações da extensão (engrenagem ao lado da busca, ou `gnome-extensions prefs ytmusic-panel@jayan`).
-3. Em **Conta e serviço**, escolha o navegador e clique em **Entrar com o navegador**.
+1. In your browser, open https://music.youtube.com and make sure you are signed in.
+2. Open the extension preferences (the gear next to the search field, or `gnome-extensions prefs ytmusic-panel@jayan`).
+3. Under **Conta e serviço** (account and service), pick your browser and click **Entrar com o navegador** (sign in with the browser).
 
-Funciona com Firefox (inclusive o snap) e com os navegadores baseados no Chromium (Chrome, Chromium, Brave, Edge, Vivaldi, Opera); só o Firefox foi testado. As credenciais ficam em `~/.config/ytmusic-daemon/browser.json`, com permissão 600, e nunca aparecem nos logs. O serviço confere a sessão antes de trocar as credenciais em uso.
+Firefox (including the snap) and Chromium-based browsers (Chrome, Chromium, Brave, Edge, Vivaldi, Opera) are supported; only Firefox has been tested. Credentials are stored in `~/.config/ytmusic-daemon/browser.json` with mode 600 and never appear in the logs. The service checks the new session before replacing the credentials in use, so a failed login never breaks a working one.
 
-**A sessão é a mesma do navegador.** Se você sair da conta do YouTube naquele navegador, o app também é desconectado; para voltar, entre de novo no navegador e clique em **Entrar com o navegador**. Enquanto você estiver conectado lá, o serviço renova o acesso sozinho quando o YouTube recusar as credenciais. **Sair da conta neste app** apaga as credenciais só daqui.
+**The session is shared with the browser.** If you sign out of YouTube in that browser, the extension is signed out too; to get back, sign in again in the browser and click **Entrar com o navegador**. While you stay signed in there, the service renews its access by itself whenever YouTube rejects the stored credentials. **Sair da conta neste app** (sign out of this app) deletes the credentials only from this computer and stops playback.
 
-### Login manual (alternativa)
+### Manual login (alternative)
 
-Copiando os cabeçalhos de uma requisição do navegador. Rode **num terminal seu**:
+This uses the headers of a request copied from the browser's developer tools. Run this **in your own terminal**:
 
 ```bash
 ~/.local/share/ytmusic-daemon/venv/bin/ytmusic-daemon-login
 ```
 
-E siga os passos:
+Then:
 
-1. Abra https://music.youtube.com logado na sua conta.
-2. Abra as ferramentas de desenvolvedor (F12), aba **Rede** (Network), e filtre por `browse`.
-3. Clique em **Biblioteca** na página para gerar uma requisição.
-4. Escolha uma requisição **POST** para `browse?...` com status 200. Ela precisa ter os cabeçalhos `Cookie` e `X-Goog-AuthUser`.
-5. Copie os cabeçalhos da requisição:
-   - Firefox: botão direito na requisição, **Copiar valor**, **Copiar cabeçalhos da requisição**.
-   - Chrome: aba **Headers**, selecione todo o bloco **Request Headers** e copie.
-6. Cole no terminal, aperte Enter e depois **Ctrl+D**.
+1. Open https://music.youtube.com signed in to your account.
+2. Open the developer tools (F12), **Network** tab, and filter by `browse`.
+3. Click **Biblioteca** (library) on the page to trigger a request.
+4. Pick a **POST** request to `browse?...` with status 200. It must include the `Cookie` and `X-Goog-AuthUser` headers.
+5. Copy the request headers:
+   - Firefox: right click the request, **Copy Value**, **Copy Request Headers**.
+   - Chrome: in the **Headers** tab, select the whole **Request Headers** block and copy it.
+6. Paste into the terminal, press Enter, then **Ctrl+D**.
 
-## Uso
+## Usage
 
-Clique no ícone no painel.
+Click the icon in the top bar.
 
-- **Busca**: o campo no topo já recebe o foco; os resultados aparecem quando você para de digitar (ou com Enter). Dentro de uma playlist, o campo fica abaixo do nome dela e filtra só as músicas da playlist (título, artista ou álbum, sem diferenciar acentos).
-- **Playlists**: "Músicas que gostei" fica sempre no topo. Clique numa playlist para ver as músicas.
-- **Ordem da playlist**: ela abre com as músicas adicionadas mais recentemente no topo. O botão ao lado de atualizar inverte para as mais antigas primeiro (fica destacado enquanto ativo); ao abrir a playlist de novo, volta para as mais recentes. Tocar a partir de uma música segue a ordem que está na tela.
-- **Tocar**: o ▶ de uma música toca a partir dela e segue a playlist. Num resultado de busca, toca só aquela música.
-- **Menu de uma música** (⋮, dentro de uma playlist; abre um menu flutuante, que fecha ao clicar fora): adicionar à fila, tocar a seguir, adicionar a outra playlist, compartilhar (copia o link `music.youtube.com` e mostra "Link copiado") e remover da playlist (só nas suas playlists; pede um segundo clique para confirmar). Remover de "Músicas que gostei" equivale a descurtir.
-- **Adicionar a uma playlist**: nos resultados da busca, o botão **+** abre a lista das suas playlists. Adicionar a "Músicas que gostei" equivale a curtir a música.
-- **Mini player** (rodapé): repetir, aleatório, anterior, play/pause e próxima. "Anterior" com mais de 3 segundos de música volta ao começo dela. Repetir alterna entre desligado, repetir a fila e repetir a música atual (ícone com "1"); aleatório embaralha o resto da fila, e desligar volta à ordem original. Quando ligados, os dois ficam na cor de destaque do sistema. Títulos longos rolam devagar para mostrar o nome inteiro.
-- **Player expandido**: clique na capa ou no nome da música, no mini player, para abrir a tela "Tocando agora", no estilo do app do YouTube Music para celular: o álbum em cima, a capa grande, o nome e o artista, a barra de progresso e, embaixo dela, os controles (aleatório, anterior, play/pause, próxima, repetir). O mini player some enquanto essa tela está aberta. Clique em qualquer ponto da barra para ir até ali. Clique de novo no mini player ou na seta para voltar.
-- **Teclas de mídia** e o controle de mídia do GNOME (menu de data e hora) controlam o mesmo player, que aparece como `org.mpris.MediaPlayer2.mpv.ytmusic`.
+- **Search**: the field at the top has focus when the popup opens; results show up when you stop typing (or press Enter). Inside a playlist the field moves below the playlist name and filters that playlist's songs instead (title, artist or album, ignoring accents).
+- **Playlists**: "Músicas que gostei" (liked music) is always first. Click a playlist to see its songs.
+- **Playlist order**: playlists open with the most recently added songs at the top. The button next to refresh flips the order to oldest first (it stays highlighted while active); reopening the playlist goes back to newest first. Playing from a song follows the order on screen.
+- **Play**: a song's ▶ plays from that song and continues through the playlist. In search results it plays just that song.
+- **Song menu** (⋮, inside a playlist; a floating menu that closes when you click outside it): add to the queue, play next, add to another playlist, share (copies the `music.youtube.com` link and shows "Link copiado") and remove from the playlist (only in your own playlists; asks for a second click to confirm). Removing from "Músicas que gostei" un-likes the song.
+- **Add to a playlist**: in search results, the **+** button lists your playlists. Adding to "Músicas que gostei" likes the song.
+- **Mini player** (bottom): repeat, shuffle, previous, play/pause and next. "Previous" more than 3 seconds into a song restarts it. Repeat cycles through off, repeat queue and repeat current song (icon with a "1"); shuffle shuffles the rest of the queue, and turning it off restores the original order. Both use the system accent color while on. Long titles scroll slowly so you can read them.
+- **Expanded player**: click the cover or the song title in the mini player to open "Tocando agora" (now playing), laid out like the YouTube Music phone app: album name on top, a large cover, title and artist, the progress bar and, below it, the controls (shuffle, previous, play/pause, next, repeat). The mini player hides while this view is open. Click anywhere on the bar to seek. Click the mini player area or the back arrow to return.
+- **Media keys** and GNOME's media controls (in the date and time menu) drive the same player, which shows up as `org.mpris.MediaPlayer2.mpv.ytmusic`.
 
-### Preferências
+### Preferences
 
 ```bash
 gnome-extensions prefs ytmusic-panel@jayan
 ```
 
-A janela mostra a sua conta (foto, nome e @) no topo e, abaixo, as seções:
+The window shows your account (photo, name and handle) at the top, then these sections:
 
-- **Aparência**: tema do popup (automático, claro ou escuro), altura do popup (fixa; se não couber na tela, diminui sozinha) e mostrar capas
-- **Biblioteca**: mostrar "Episódios para mais tarde" (lista de podcasts salvos; escondida por padrão)
-- **Conta e serviço**: comandos de login e de logs
+- **Aparência** (appearance): popup theme (automatic, light or dark), popup height (fixed; it shrinks automatically if it doesn't fit the screen) and whether to show covers
+- **Biblioteca** (library): show "Episódios para mais tarde" (saved podcast episodes; hidden by default)
+- **Conta e serviço** (account and service): browser sign in, sign out, and the commands for manual login and logs
 
-A engrenagem ao lado da busca, no popup, abre a mesma janela.
+The gear next to the search field in the popup opens the same window.
 
-## Logs e diagnóstico
+## Logs and troubleshooting
 
 ```bash
-journalctl --user -fu ytmusic-daemon                      # serviço
-journalctl -f -o cat /usr/bin/gnome-shell | grep -i ytmusic # extensão
+journalctl --user -fu ytmusic-daemon                      # service
+journalctl -f -o cat /usr/bin/gnome-shell | grep -i ytmusic # extension
 systemctl --user status ytmusic-daemon
 busctl --user call io.github.jayanmoura.YTMusic /io/github/jayanmoura/YTMusic io.github.jayanmoura.YTMusic GetStatus
 ```
 
-### Problemas comuns
+### Common problems
 
-- **"Você não está conectado"**: confira se está conectado no navegador e clique em **Entrar com o navegador** nas configurações.
-- **"O serviço ytmusic-daemon não está respondendo"**: `systemctl --user restart ytmusic-daemon` e veja o journal.
-- **A música não toca, ou o journal mostra "track failed to play"**: o YouTube muda as proteções com frequência. Atualize o yt-dlp com `./scripts/install-daemon.sh` (ele sempre instala a versão mais nova) e reinicie o serviço.
-- **Demora para começar a tocar**: obter o áudio de uma música leva cerca de 2 a 4 segundos. Para esconder isso, o serviço começa a buscar o áudio quando você para o mouse sobre uma música, e busca a próxima da fila enquanto a atual toca; nesses casos ela começa em menos de 1 segundo.
+- **"Você não está conectado"** (you are not signed in): check that you are signed in in the browser and click **Entrar com o navegador** in the preferences.
+- **"O serviço ytmusic-daemon não está respondendo"** (the service is not responding): run `systemctl --user restart ytmusic-daemon` and check the journal.
+- **A song doesn't play, or the journal says "track failed to play"**: YouTube changes its protections often. Update yt-dlp with `./scripts/install-daemon.sh` (it always installs the latest version) and restart the service.
+- **Songs take a moment to start**: getting a song's audio takes about 2 to 4 seconds. To hide that, the service starts fetching the audio as soon as your pointer rests on a song, and fetches the next song in the queue while the current one plays; in those cases playback starts in under a second.
 
-## Desinstalação
+## Uninstalling
 
 ```bash
-./uninstall.sh          # mantém as credenciais
-./uninstall.sh --purge  # apaga também credenciais e cache de capas
+./uninstall.sh          # keeps your credentials
+./uninstall.sh --purge  # also deletes credentials and the cover cache
 ```
 
-## Desenvolvimento
+## Development
 
-Estrutura:
+Layout:
 
 ```
-extension/                extensão GNOME Shell (GJS, módulos ES)
-  extension.js            enable/disable: adiciona e remove o indicador
-  indicator.js            botão do painel e popup: montagem, navegação entre as
-                          telas, sobreposições e distribuição do estado da reprodução
-  constants.js            IDs especiais, tempos e textos de erro
-  util.js                 funções puras (ordenar playlists, formatar tempo etc.)
-  appearance.js           altura da lista e tema claro/escuro
-  covers.js               capas: fila e carregamento em lote pelo serviço
-  ytmusicClient.js        cliente D-Bus assíncrono
-  prefs.js                preferências (Adw)
+extension/                GNOME Shell extension (GJS, ES modules)
+  extension.js            enable/disable: adds and removes the indicator
+  indicator.js            panel button and popup: building it, navigating between
+                          views, overlays and handing playback state to the player
+  constants.js            special ids, timings and error texts
+  util.js                 pure helpers (sorting playlists, formatting time, etc.)
+  appearance.js           list height and light/dark theme
+  covers.js               covers: queue and batched loading through the service
+  ytmusicClient.js        asynchronous D-Bus client
+  prefs.js                preferences (Adw)
   views/
-    playlistsView.js      lista de playlists
-    tracksView.js         músicas da playlist, filtro, ordem e "mostrar mais"
-    searchView.js         busca
-    pickerView.js         "Adicionar a playlist"
+    playlistsView.js      playlist list
+    tracksView.js         playlist songs, filter, order and "show more"
+    searchView.js         search
+    pickerView.js         "add to playlist"
   player/
-    controls.js           botões de reprodução e o estado deles
-    miniPlayer.js         mini player e título rolando
-    nowPlaying.js         player expandido e barra de progresso
+    controls.js           playback buttons and their state
+    miniPlayer.js         mini player and scrolling title
+    nowPlaying.js         expanded player and progress bar
   widgets/
-    common.js             botões, rótulos e ClipBox
-    header.js             linha de busca e cabeçalho
-    trackRow.js           linha de música e pré-carga ao passar o mouse
-    floatMenu.js          menu flutuante (⋮) e as ações da música
-    toast.js              avisos curtos ("Link copiado")
-daemon/ytmusic_daemon/    serviço Python
-  service.py              interface D-Bus
-  validation.py           validação dos argumentos de todos os métodos D-Bus
-  client.py               ytmusicapi, caches
-  player.py               mpv via IPC
-  covers.py               cache de capas em disco
-  login.py                ytmusic-daemon-login (login manual)
-  browser_login.py        login com os cookies do navegador
-  resolver.py             obtém o áudio com antecedência (yt-dlp como biblioteca)
-  preload.lua             script do mpv que usa o áudio já obtido
+    common.js             buttons, labels and ClipBox
+    header.js             search row and header
+    trackRow.js           song row and audio prefetch on hover
+    floatMenu.js          floating menu (⋮) and song actions
+    toast.js              short notices ("Link copiado")
+daemon/ytmusic_daemon/    Python service
+  service.py              D-Bus interface
+  validation.py           argument validation for every D-Bus method
+  client.py               ytmusicapi and caches
+  player.py               mpv over IPC
+  covers.py               on-disk cover cache
+  login.py                ytmusic-daemon-login (manual login)
+  browser_login.py        login with the browser's cookies
+  resolver.py             resolves audio ahead of time (yt-dlp as a library)
+  preload.lua             mpv script that uses the already resolved audio
 scripts/
-  install-daemon.sh       venv, pacote e serviço systemd
-  dev-link.sh             liga a extensão a ~/.local/share e compila o schema
-  nested-shell.sh         shell aninhada para testes, com o serviço no barramento dela
-  check-interface.py      confere se a interface D-Bus da extensão bate com a do serviço
-  check-calls.py          confere se os métodos do indicador chamados pelos módulos existem
+  install-daemon.sh       venv, package and systemd service
+  dev-link.sh             links the extension into ~/.local/share and compiles the schema
+  nested-shell.sh         nested shell for testing, with the service on its own bus
+  check-interface.py      checks that the extension's D-Bus interface matches the service's
+  check-calls.py          checks that indicator methods called by the modules exist
 ```
 
-Os módulos de `views/`, `player/` e `widgets/` recebem o indicador como parâmetro e nunca importam o `indicator.js` (sem importação circular). Cada módulo que cria timeouts ou conecta sinais tem o próprio `destroy()`, chamado pelo indicador.
+Modules in `views/`, `player/` and `widgets/` receive the indicator as a parameter and never import `indicator.js` (no circular imports). Every module that adds timeouts or connects signals has its own `destroy()`, called by the indicator.
 
-Ciclo de desenvolvimento:
+Development loop:
 
-- **Extensão**: `./scripts/nested-shell.sh` abre uma GNOME Shell numa janela, com uma cópia do serviço no barramento isolado dela. Feche e abra de novo para recarregar o código. Os logs saem no terminal.
-- **Serviço**: depois de editar, `systemctl --user restart ytmusic-daemon`.
-- **Interface D-Bus**: ao adicionar ou mudar um método, atualize `INTROSPECTION_XML` em `service.py`, `IFACE_XML` em `ytmusicClient.js` e `METHOD_ARGS` em `validation.py`.
-- Para testar a reprodução sem som, inicie o serviço com `YTMUSIC_MPV_EXTRA_ARGS=--ao=null`.
+- **Extension**: `./scripts/nested-shell.sh` opens a GNOME Shell in a window, with a copy of the service on that shell's own session bus. Close it and open it again to reload the code. Logs go to the terminal.
+- **Service**: after editing, `systemctl --user restart ytmusic-daemon`.
+- **D-Bus interface**: when you add or change a method, update `INTROSPECTION_XML` in `service.py`, `IFACE_XML` in `ytmusicClient.js` and `METHOD_ARGS` in `validation.py`.
+- To test playback without sound, start the service with `YTMUSIC_MPV_EXTRA_ARGS=--ao=null`.
 
-### Testes e lint
+### Tests and lint
 
-Rodam também no GitHub Actions a cada push e pull request (`.github/workflows/ci.yml`).
+They also run on GitHub Actions for every push and pull request (`.github/workflows/ci.yml`).
 
-Python (no venv do serviço; as ferramentas são dependências opcionais `[dev]`):
+Python (in the service's venv; the tools are the optional `[dev]` dependencies):
 
 ```bash
 V=~/.local/share/ytmusic-daemon/venv/bin
-$V/pip install -e "daemon[dev]"                          # pytest e ruff, uma vez
-$V/pytest daemon                                         # testes, sem rede e sem mpv
+$V/pip install -e "daemon[dev]"                          # pytest and ruff, once
+$V/pytest daemon                                         # tests, no network and no mpv
 $V/ruff check --config daemon/pyproject.toml daemon scripts
-python3 scripts/check-interface.py                       # interface D-Bus igual nos dois lados
-python3 scripts/check-calls.py                           # métodos do indicador chamados pelos módulos
+python3 scripts/check-interface.py                       # D-Bus interface matches on both sides
+python3 scripts/check-calls.py                           # indicator methods called by the modules
 ```
 
-Os testes não tocam nas suas credenciais: as pastas XDG apontam para um diretório temporário.
+The tests never touch your credentials: the XDG folders point to a temporary directory.
 
-Extensão (eslint, instalado localmente em `node_modules/`):
+Extension (eslint, installed locally in `node_modules/`):
 
 ```bash
-npm install          # uma vez
+npm install          # once
 npm run lint
 ```
 
-### Decisões e armadilhas conhecidas
+### Design notes and known pitfalls
 
-- O yt-dlp usa o cliente `web_music` do YouTube: as URLs do cliente padrão retornam 403 quando abertas pelo mpv.
-- `--audio-client-name` do mpv não pode ter espaço: o mpv-mpris usa esse valor no nome D-Bus, e um nome inválido trava o mpv.
-- A busca usa o ytmusicapi em inglês, porque com idioma `pt` o filtro de músicas volta vazio. Títulos e artistas não são traduzidos, então nada muda na tela.
+- yt-dlp uses YouTube's `web_music` client: stream URLs from the default client return 403 when mpv opens them.
+- mpv's `--audio-client-name` must not contain spaces: mpv-mpris builds its D-Bus name from it, and an invalid name hangs mpv.
+- Search uses ytmusicapi in English, because with language `pt` the songs filter comes back empty. Titles and artists are not translated, so nothing changes on screen.
 
-## Licença
+## License
 
-GPL-2.0-or-later. Veja o arquivo [LICENSE](LICENSE).
+GPL-2.0-or-later. See [LICENSE](LICENSE).
